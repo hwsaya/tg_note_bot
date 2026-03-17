@@ -1,0 +1,15 @@
+{
+  "name": "tg-note-bot",
+  "version": "3.0.0",
+  "description": "Telegram 话题群组笔记自动分类 Bot（CF Workers + 任意 OpenAI 兼容 AI）",
+  "main": "src/worker.js",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "tail": "wrangler tail"
+  },
+  "devDependencies": {
+    "wrangler": "^3.0.0"
+  }
+}
+
