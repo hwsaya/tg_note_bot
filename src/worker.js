@@ -20,9 +20,30 @@
  *   SPEECH_BASE_URL / SPEECH_MODEL
  */
 
+import {
+  CONFIDENCE_THRESHOLD,
+  STORAGE_WARN_MB,
+  CLEAN_DEFAULT_DAYS,
+  CHAT_EXPIRE_SECONDS,
+  NOTIFY_AUTO_DELETE_MS,
+  NOTIFY_LOW_CONF_DELETE_MS,
+  CHAT_CONTEXT_NOTE_COUNT,
+  DEFAULT_AI_BASE_URL,
+  DEFAULT_AI_MODEL,
+  DEFAULT_VISION_BASE_URL,
+  DEFAULT_VISION_MODEL_PHOTO,
+  DEFAULT_VISION_MODEL_DOC,
+  DEFAULT_SPEECH_BASE_URL,
+  DEFAULT_SPEECH_MODEL,
+  PROMPT_CLASSIFY,
+  PROMPT_RECLASSIFY,
+  PROMPT_IMAGE_DESCRIBE,
+  PROMPT_CHAT_SYSTEM,
+  PROMPT_CHAT_SUMMARY,
+} from './config.js';
+
 const TG_API = (token, method) => `https://api.telegram.org/bot${token}/${method}`;
-const CONFIDENCE_THRESHOLD = 0.70;
-const KV_FREE_LIMIT_MB     = 1024; // CF KV 免费版 1GB
+const KV_FREE_LIMIT_MB = 1024;
 
 // ─── Telegram API ─────────────────────────────────────────────────────────────
 
@@ -267,7 +288,7 @@ const getChatSession = async (kv, chatId, threadId) => {
 };
 
 const saveChatSession = (kv, chatId, threadId, session) =>
-  kv.put(`chat:${chatId}:${threadId}`, JSON.stringify(session), { expirationTtl: 3600 }); // 1小时自动过期
+  kv.put(`chat:${chatId}:${threadId}`, JSON.stringify(session), { expirationTtl: CHAT_EXPIRE_SECONDS });
 
 const deleteChatSession = (kv, chatId, threadId) =>
   kv.delete(`chat:${chatId}:${threadId}`);
@@ -317,8 +338,8 @@ async function speechToText(token, fileId, env) {
   const buf = await downloadFile(token, fileId);
   if (!buf) return null;
 
-  const baseUrl = (env.SPEECH_BASE_URL || 'https://api.siliconflow.cn/v1').replace(/\/$/, '');
-  const model   = env.SPEECH_MODEL || 'FunAudioLLM/SenseVoiceSmall';
+  const baseUrl = (env.SPEECH_BASE_URL || DEFAULT_SPEECH_BASE_URL).replace(/\/$/, '');
+  const model   = env.SPEECH_MODEL || DEFAULT_SPEECH_MODEL;
 
   const form = new FormData();
   form.append('file', new Blob([buf], { type: 'audio/ogg' }), 'voice.ogg');
@@ -343,16 +364,12 @@ async function classifyText(text, env, chatId) {
   const prefs = await getPrefs(env.KV, chatId);
   const prefsHint = buildPrefsPrompt(prefs);
 
-  const prompt = `你是笔记分类助手。${existingHint}${prefsHint}
-规则：优先复用已有话题；新话题名2-6字、具体；不用"其他""杂项"。
-confidence 为分类置信度（0.0-1.0），不确定时给低分。
-只输出JSON：{"category":"话题名","summary":"摘要不超过20字","confidence":0.9}
-内容：${text}`;
+  const prompt = PROMPT_CLASSIFY(existingHint, prefsHint, text);
 
   const raw = await callAI(
-    env.AI_BASE_URL || 'https://api.deepseek.com/v1',
+    env.AI_BASE_URL || DEFAULT_AI_BASE_URL,
     env.AI_API_KEY,
-    env.AI_MODEL || 'deepseek-chat',
+    env.AI_MODEL || DEFAULT_AI_MODEL,
     [{ role: 'user', content: prompt }], 120
   );
   return parseJSON(raw) || { category: '未分类', summary: text.slice(0, 20), confidence: 0 };
@@ -365,18 +382,18 @@ async function classifyImage(fileId, isDocImage, token, env, chatId) {
   if (!base64) return { category: '图片', summary: '图片内容', confidence: 0.5 };
 
   const model = isDocImage
-    ? (env.VISION_MODEL_DOC   || 'PaddleOCR-VL-1.5')
-    : (env.VISION_MODEL_PHOTO || 'Qwen/Qwen2.5-VL-7B-Instruct');
+    ? (env.VISION_MODEL_DOC || DEFAULT_VISION_MODEL_DOC)
+    : (env.VISION_MODEL_PHOTO || DEFAULT_VISION_MODEL_PHOTO);
 
   const desc = await callAI(
-    env.VISION_BASE_URL || 'https://api.siliconflow.cn/v1',
+    env.VISION_BASE_URL || DEFAULT_VISION_BASE_URL,
     env.VISION_API_KEY,
     model,
     [{
       role: 'user',
       content: [
         { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${base64}` } },
-        { type: 'text', text: '用中文简短描述这张图片的主要内容（不超过50字）' },
+        { type: 'text', text: PROMPT_IMAGE_DESCRIBE },
       ],
     }], 100
   );
@@ -492,9 +509,9 @@ async function handleDefaultTopicMessage(msg, env) {
   // ── 存储量预警（超过 900MB 时提醒）───────────────────────────────────────
   const usedBytes = await getStorageBytes(env.KV, chatId);
   const usedMB    = usedBytes / 1024 / 1024;
-  if (usedMB > 900) {
+  if (usedMB > STORAGE_WARN_MB) {
     await sendMessage(token, chatId,
-      `⚠️ <b>存储预警</b>：笔记已占用 ${usedMB.toFixed(1)}MB / 1024MB\n` +
+      `⚠️ <b>存储预警</b>：笔记已占用 ${usedMB.toFixed(1)}MB / ${KV_FREE_LIMIT_MB}MB\n` +
       `建议发 /clean 清理旧笔记`
     );
   }
@@ -682,19 +699,14 @@ async function handlePendingInput(msg, pending, env) {
     const existingHint = existing.length ? `\n已有话题（优先复用）：${existing.join('、')}\n` : '';
     const prefsHint    = buildPrefsPrompt(prefs);
 
-    const prompt = `你是笔记分类助手。${existingHint}${prefsHint}
-上次将此内容分到「${pending.topicName}」被用户否定，请换一个更合适的话题。
-用户提示：${userHint}
-规则：话题名2-6字、具体；不用"其他""杂项"。
-只输出JSON：{"category":"话题名","summary":"摘要不超过20字","confidence":0.9}
-内容：${pending.preview}`;
+    const prompt = PROMPT_RECLASSIFY(existingHint, prefsHint, pending.topicName, userHint, pending.preview);
 
     let newCategory = '未分类';
     try {
       const raw = await callAI(
-        env.AI_BASE_URL || 'https://api.deepseek.com/v1',
+        env.AI_BASE_URL || DEFAULT_AI_BASE_URL,
         env.AI_API_KEY,
-        env.AI_MODEL || 'deepseek-chat',
+        env.AI_MODEL || DEFAULT_AI_MODEL,
         [{ role: 'user', content: prompt }], 100
       );
       const parsed = parseJSON(raw);
@@ -749,10 +761,35 @@ export default {
       if (isForumGroup(msg)) {
         // 引用回复"删除" → 并行静默删除
         if (msg.text?.trim() === '删除' && msg.reply_to_message) {
+          const chatId = String(msg.chat.id);
+          // 并行删除两条消息
           await Promise.all([
-            deleteMessage(env.TELEGRAM_BOT_TOKEN, msg.chat.id, msg.reply_to_message.message_id),
-            deleteMessage(env.TELEGRAM_BOT_TOKEN, msg.chat.id, msg.message_id),
+            deleteMessage(env.TELEGRAM_BOT_TOKEN, chatId, msg.reply_to_message.message_id),
+            deleteMessage(env.TELEGRAM_BOT_TOKEN, chatId, msg.message_id),
           ]);
+          // 同步删除 KV 里对应的笔记
+          try {
+            const msgDate = (msg.reply_to_message.date || 0) * 1000;
+            const idxRaw  = await env.KV.get(`noteindex:${chatId}`);
+            if (idxRaw) {
+              const idx   = JSON.parse(idxRaw);
+              const match = idx.findIndex(n => Math.abs(n.ts - msgDate) < 30000);
+              if (match >= 0) {
+                const noteId  = idx[match].id;
+                const noteRaw = await env.KV.get(`note:${noteId}`);
+                if (noteRaw) {
+                  const freed = new TextEncoder().encode(noteRaw).length;
+                  idx.splice(match, 1);
+                  const cur = Number(await env.KV.get(`storage:${chatId}`) || '0');
+                  await Promise.all([
+                    env.KV.delete(`note:${noteId}`),
+                    env.KV.put(`noteindex:${chatId}`, JSON.stringify(idx)),
+                    env.KV.put(`storage:${chatId}`, String(Math.max(0, cur - freed))),
+                  ]);
+                }
+              }
+            }
+          } catch(e) { console.error('KV delete error:', e); }
           return new Response('OK');
         }
 
@@ -829,33 +866,27 @@ async function startChat(msg, env) {
     return;
   }
 
+  // 发思考中占位
+  const thinkRes = await sendMessage(token, chatId, '🤔 思考中…', msg.message_thread_id);
+  const thinkId  = thinkRes?.result?.message_id;
+
   // 读取该话题最近 10 条笔记全文作为上下文
   const notes  = await getNotesByTopic(env.KV, chatId, await getTopicNameByThreadId(env.KV, chatId, threadId));
-  const recent = notes.slice(-10);
+  const recent = notes.slice(-CHAT_CONTEXT_NOTE_COUNT);
   const contextText = recent.length
     ? recent.map((n, i) => `[笔记${i + 1}] ` + n.content).join('\n\n')
     : '';
 
-  const systemPrompt =
-    `你是用户的笔记助手。以下是该话题的相关笔记内容，作为背景参考：
-
-${contextText}
-
-` +
-    `用户正在针对以下这条笔记和你对话：
-「${quotedText}」
-
-` +
-    `请基于这些内容回答用户的问题。回答简洁、有用，不要使用 **加粗** 格式。`;
+  const systemPrompt = PROMPT_CHAT_SYSTEM(contextText, quotedText);
 
   // 构建初始历史
   const history = [{ role: 'user', content: text }];
 
   // 调用 AI
   const aiReply = await callAI(
-    env.AI_BASE_URL || 'https://api.deepseek.com/v1',
+    env.AI_BASE_URL || DEFAULT_AI_BASE_URL,
     env.AI_API_KEY,
-    env.AI_MODEL || 'deepseek-chat',
+    env.AI_MODEL || DEFAULT_AI_MODEL,
     [{ role: 'system', content: systemPrompt }, ...history],
     800
   );
@@ -870,11 +901,9 @@ ${contextText}
     msgIds: [message_id],
   });
 
-  // 发回复
-  const replyRes = await sendMessage(token, chatId, aiReply, msg.message_thread_id, {
-    reply_to_message_id: message_id,
-  });
-  const replyMsgId = replyRes?.result?.message_id;
+  // 用 AI 回复替换占位消息
+  if (thinkId) await editMessageText(token, chatId, thinkId, aiReply);
+  const replyMsgId = thinkId;
   if (replyMsgId) {
     const session = await getChatSession(env.KV, chatId, threadId);
     session.msgIds.push(replyMsgId);
@@ -891,22 +920,16 @@ async function continueChat(msg, session, env) {
   session.history.push({ role: 'user', content: text });
   session.msgIds.push(message_id);
 
-  const systemPrompt =
-    `你是用户的笔记助手。以下是该话题的相关笔记内容，作为背景参考：
+  // 发思考中占位
+  const thinkRes2 = await sendMessage(token, chatId, '🤔 思考中…', msg.message_thread_id);
+  const thinkId2  = thinkRes2?.result?.message_id;
 
-${session.contextText || ''}
-
-` +
-    `用户正在针对以下这条笔记和你对话：
-「${session.noteContext}」
-
-` +
-    `请基于这些内容回答用户的问题。回答简洁、有用，不要使用 **加粗** 格式。`;
+  const systemPrompt = PROMPT_CHAT_SYSTEM(session.contextText || '', session.noteContext);
 
   const aiReply = await callAI(
-    env.AI_BASE_URL || 'https://api.deepseek.com/v1',
+    env.AI_BASE_URL || DEFAULT_AI_BASE_URL,
     env.AI_API_KEY,
-    env.AI_MODEL || 'deepseek-chat',
+    env.AI_MODEL || DEFAULT_AI_MODEL,
     [{ role: 'system', content: systemPrompt }, ...session.history],
     800
   );
@@ -915,10 +938,10 @@ ${session.contextText || ''}
 
   await saveChatSession(env.KV, chatId, threadId, session);
 
-  const replyRes = await sendMessage(token, chatId, aiReply, msg.message_thread_id);
-  const replyMsgId = replyRes?.result?.message_id;
-  if (replyMsgId) {
-    session.msgIds.push(replyMsgId);
+  // 用 AI 回复替换占位
+  if (thinkId2) await editMessageText(token, chatId, thinkId2, aiReply);
+  if (thinkId2) {
+    session.msgIds.push(thinkId2);
     await saveChatSession(env.KV, chatId, threadId, session);
   }
 }
@@ -932,21 +955,23 @@ async function endChat(msg, session, env) {
   // 删除"结束对话"这条消息
   await deleteMessage(token, chatId, message_id);
 
+  // 发总结中占位
+  const summaryPlaceholder = await sendMessage(token, chatId, '📝 正在生成对话摘要…', msg.message_thread_id);
+  const summaryPlaceholderId = summaryPlaceholder?.result?.message_id;
+
   // 让 AI 总结对话，提炼有用内容
   const historyText = session.history
     .map(h => `${h.role === 'user' ? '我' : 'AI'}：${h.content}`)
     .join('\n\n');
 
-  const summaryPrompt =
-    `以下是一段针对笔记的对话记录，请提炼其中有价值的内容，` +
-    `以简洁清晰的笔记形式输出（不超过200字），去掉对话语气，只保留有用的结论、补充或洞察，不要使用 **加粗** 格式：\n\n原始笔记：「${session.noteContext}」\n\n对话记录：\n${historyText}`;
+  const summaryPrompt = PROMPT_CHAT_SUMMARY(session.noteContext, historyText);
 
   let summary = '';
   try {
     summary = await callAI(
-      env.AI_BASE_URL || 'https://api.deepseek.com/v1',
+      env.AI_BASE_URL || DEFAULT_AI_BASE_URL,
       env.AI_API_KEY,
-      env.AI_MODEL || 'deepseek-chat',
+      env.AI_MODEL || DEFAULT_AI_MODEL,
       [{ role: 'user', content: summaryPrompt }],
       400
     );
@@ -958,7 +983,8 @@ async function endChat(msg, session, env) {
   // 并行删除所有对话消息
   await Promise.all(session.msgIds.map(id => deleteMessage(token, chatId, id)));
 
-  // 发摘要到话题
+  // 删占位，发最终摘要
+  if (summaryPlaceholderId) await deleteMessage(token, chatId, summaryPlaceholderId);
   const topicName = await getTopicNameByThreadId(env.KV, chatId, threadId);
   const summaryMsg = `📝 <b>对话摘要</b>
 
@@ -1107,7 +1133,7 @@ async function handleCommand(msg, env) {
   }
 
   if (cmd === '/clean') {
-    const days = Number(parts[1]) || 30;
+    const days = Number(parts[1]) || CLEAN_DEFAULT_DAYS;
     const cleaned = await cleanOldNotes(env.KV, chatId, days);
     const usedBytes = await getStorageBytes(env.KV, chatId);
     const usedMB    = (usedBytes / 1024 / 1024).toFixed(2);
