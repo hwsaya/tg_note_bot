@@ -30,6 +30,10 @@ export const NOTIFY_LOW_CONF_DELETE_MS = 60000; // 1 分钟
 // 对话上下文：带入该话题最近 N 条笔记全文
 export const CHAT_CONTEXT_NOTE_COUNT = 10;
 
+// 视觉模型记忆的最大存储条数（记住图片特征）
+export const MAX_MEMORY_COUNT = 30;
+
+
 // ─── AI 默认模型（wrangler.toml 里可覆盖）────────────────────────────────────
 
 export const DEFAULT_AI_BASE_URL     = 'https://api.deepseek.com/v1';
