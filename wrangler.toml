@@ -1,0 +1,32 @@
+name = "tg-note-bot"
+main = "src/worker.js"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+# KV 命名空间 
+# 在 CF 控制台 Workers & Pages → KV 里创建，把 ID 填到下面
+
+[[kv_namespaces]]
+binding = "KV"
+id = "25f140b1fdfc4473a6d32bcebc16a892"
+
+# ── AI 配置
+[vars]
+
+# 默认：DeepSeek
+AI_BASE_URL = "https://api.deepseek.com/v1"
+AI_MODEL    = "deepseek-chat"
+
+# 其他可选服务商，取消注释替换上面两行即可：
+
+# OpenAI
+# AI_BASE_URL = "https://api.openai.com/v1"
+# AI_MODEL    = "gpt-4o-mini"
+
+# Groq（免费额度充足，速度极快）
+# AI_BASE_URL = "https://api.groq.com/openai/v1"
+# AI_MODEL    = "llama-3.3-70b-versatile"
+
+# 硅基流动（国内访问友好）
+# AI_BASE_URL = "https://api.siliconflow.cn/v1"
+# AI_MODEL    = "Qwen/Qwen2.5-7B-Instruct"
