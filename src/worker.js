@@ -248,8 +248,6 @@ async function handleDefaultTopicMessage(msg, env) {
   const { chat, message_id, text, caption, photo, document } = msg;
   const chatId = String(chat.id);
   const token = env.TELEGRAM_BOT_TOKEN;
-  const isPlainText = !!text && !photo && !document && !msg.video && !msg.audio && !msg.voice;
-
   const hasVisionKey = !!env.VISION_API_KEY;
 
   let result;
@@ -281,15 +279,9 @@ async function handleDefaultTopicMessage(msg, env) {
     return;
   }
 
-  // 复制到目标话题
-  let movedMsgId;
-  if (isPlainText) {
-    const r = await sendMessage(token, chatId, text, threadId);
-    movedMsgId = r?.result?.message_id;
-  } else {
-    const r = await copyMessage(token, chatId, chatId, message_id, threadId);
-    movedMsgId = r?.result?.message_id;
-  }
+  // 统一用 copyMessage，保留原始格式（代码块、加粗等）
+  const r = await copyMessage(token, chatId, chatId, message_id, threadId);
+  const movedMsgId = r?.result?.message_id;
 
   // 删除默认话题原消息
   await deleteMessage(token, chatId, message_id);
@@ -331,25 +323,41 @@ async function handleCallbackQuery(query, env) {
       await editMessageText(token, chatId, notifMsgId, '⚠️ 纠错已过期（超过1小时）');
       return;
     }
-    const map = await getTopicMap(env.KV, chatId);
-    const entries = Object.entries(map).filter(([, tid]) => tid !== corr.movedThreadId);
-
     const rows = [
-      // 顶部两个特殊选项
       [{ text: '🤖 让 AI 重新分类', callback_data: 'corr_ai' }],
-      [{ text: '✏️ 自定义话题名', callback_data: 'corr_custom' }],
+      [{ text: '✏️ 自定义话题名',  callback_data: 'corr_custom' }],
+      [{ text: '📁 选择已有话题',  callback_data: 'corr_list' }],
+      [{ text: '❌ 取消',          callback_data: 'corr_cancel' }],
     ];
-    // 现有话题，每行2个
-    for (let i = 0; i < entries.length; i += 2) {
-      rows.push(entries.slice(i, i + 2).map(([name, tid]) => ({
-        text: `📁 ${name}`,
-        callback_data: `cm:${tid}`,
-      })));
-    }
-    rows.push([{ text: '❌ 取消', callback_data: 'corr_cancel' }]);
-
     await editMessageText(token, chatId, notifMsgId,
       `当前：<b>${corr.topicName}</b>\n\n选择纠正方式：`,
+      { inline_keyboard: rows }
+    );
+    return;
+  }
+
+  // 展开已有话题列表
+  if (data === 'corr_list') {
+    const corr = await getCorrection(env.KV, chatId, notifMsgId);
+    if (!corr) { await editMessageText(token, chatId, notifMsgId, '⚠️ 纠错已过期'); return; }
+    const map = await getTopicMap(env.KV, chatId);
+    const entries = Object.entries(map).filter(([, tid]) => tid !== corr.movedThreadId);
+    if (!entries.length) {
+      await editMessageText(token, chatId, notifMsgId,
+        `当前：<b>${corr.topicName}</b>\n\n没有其他话题可选。`,
+        { inline_keyboard: [[{ text: '← 返回', callback_data: 'corr_show' }]] }
+      );
+      return;
+    }
+    const rows = [];
+    for (let i = 0; i < entries.length; i += 2) {
+      rows.push(entries.slice(i, i + 2).map(([name, tid]) => ({
+        text: `📁 ${name}`, callback_data: `cm:${tid}`,
+      })));
+    }
+    rows.push([{ text: '← 返回', callback_data: 'corr_show' }]);
+    await editMessageText(token, chatId, notifMsgId,
+      `当前：<b>${corr.topicName}</b>\n\n选择目标话题：`,
       { inline_keyboard: rows }
     );
     return;
@@ -432,6 +440,12 @@ export default {
       const msg = body.message;
       if (!msg) return new Response('OK');
       if (isForumGroup(msg)) {
+        // 引用回复"删除"→ 静默删除 bot 消息和用户消息
+        if (msg.text?.trim() === '删除' && msg.reply_to_message) {
+          await deleteMessage(env.TELEGRAM_BOT_TOKEN, msg.chat.id, msg.reply_to_message.message_id);
+          await deleteMessage(env.TELEGRAM_BOT_TOKEN, msg.chat.id, msg.message_id);
+          return new Response('OK');
+        }
         if (msg.text?.startsWith('/')) {
           await handleCommand(msg, env);
         } else if (isDefaultTopic(msg)) {
