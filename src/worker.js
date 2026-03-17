@@ -935,19 +935,11 @@ async function endChat(msg, session, env) {
   // 让 AI 总结对话，提炼有用内容
   const historyText = session.history
     .map(h => `${h.role === 'user' ? '我' : 'AI'}：${h.content}`)
-    .join('
-
-');
+    .join('\n\n');
 
   const summaryPrompt =
     `以下是一段针对笔记的对话记录，请提炼其中有价值的内容，` +
-    `以简洁清晰的笔记形式输出（不超过200字），去掉对话语气，只保留有用的结论、补充或洞察：
-
-` +
-    `原始笔记：「${session.noteContext}」
-
-对话记录：
-${historyText}`;
+    `以简洁清晰的笔记形式输出（不超过200字），去掉对话语气，只保留有用的结论、补充或洞察：\n\n原始笔记：「${session.noteContext}」\n\n对话记录：\n${historyText}`;
 
   let summary = '';
   try {
