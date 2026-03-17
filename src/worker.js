@@ -503,11 +503,13 @@ async function handleDefaultTopicMessage(msg, env) {
   }
 
   // 置信度正常时 5 秒后自动删通知
-  if (notifMsgId && !lowConf) {
+  if (notifMsgId) {
     (async () => {
-      await new Promise(res => setTimeout(res, 5000));
-      await deleteMessage(token, chatId, notifMsgId);
-      await deleteCorrection(env.KV, chatId, notifMsgId);
+      await new Promise(res => setTimeout(res, lowConf ? 120000 : 5000));
+      await Promise.all([
+        deleteMessage(token, chatId, notifMsgId),
+        deleteCorrection(env.KV, chatId, notifMsgId),
+      ]);
     })();
   }
 }
