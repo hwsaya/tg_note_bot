@@ -38,7 +38,7 @@ export const DEFAULT_VISION_BASE_URL = 'https://api.siliconflow.cn/v1';
 export const DEFAULT_VISION_MODEL_PHOTO = 'Qwen/Qwen3-VL-30B-A3B-Instruct'; // 普通照片
 export const DEFAULT_VISION_MODEL_DOC   = 'Qwen/Qwen3-VL-30B-A3B-Instruct';             // 截图/文字图片
 export const DEFAULT_SPEECH_BASE_URL = 'https://api.siliconflow.cn/v1';
-export const DEFAULT_SPEECH_MODEL    = 'FunAudioLLM/SenseVoiceSmall';     // 语音转文字
+export const DEFAULT_SPEECH_MODEL    = 'TeleAI/TeleSpeechASR';     // 语音转文字
 
 // ─── 提示词 ────────────────────────────────────────────────────────────────────
 
