@@ -1,4 +1,3 @@
-/**
  * Telegram 话题群组笔记分类 Bot — Cloudflare Worker v3
  *
  * 新特性：
