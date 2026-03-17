@@ -124,6 +124,18 @@ async function addPref(kv, chatId, from, to) {
   await kv.put(`prefs:${chatId}`, JSON.stringify(prefs));
 }
 
+const getMemories = async (kv, chatId) => {
+  const r = await kv.get(`memories:${chatId}`); return r ? JSON.parse(r) : [];
+};
+
+async function addMemory(kv, chatId, text) {
+  const mems = await getMemories(kv, chatId);
+  if (!mems.includes(text)) mems.push(text);
+  // 使用 config 中的限制数量
+  if (mems.length > MAX_MEMORY_COUNT) mems.shift(); 
+  await kv.put(`memories:${chatId}`, JSON.stringify(mems));
+}
+
 const buildPrefsPrompt = (prefs) => prefs.length
   ? `\n用户分类偏好（优先参考）：\n${prefs.map(p => `- 「${p.from}」→「${p.to}」`).join('\n')}\n`
   : '';
@@ -368,18 +380,19 @@ async function speechToText(token, fileId, env) {
 
 // ─── 文字分类 ─────────────────────────────────────────────────────────────────
 
-async function classifyText(text, env, chatId) {
+async function classifyText(text, env, chatId, useMemories = false) {
   const topicMap = await getTopicMap(env.KV, chatId);
   const existing = Object.keys(topicMap);
   const existingHint = existing.length ? `\n已有话题（优先复用）：${existing.join('、')}\n` : '';
   const prefs = await getPrefs(env.KV, chatId);
   let prefsHint = buildPrefsPrompt(prefs);
   
-  const memories = await getMemories(env.KV, chatId);
-  if (memories.length > 0) {
-    prefsHint += `\n用户专属记忆规则（必须严格遵守）：\n${memories.map(m => `- ${m}`).join('\n')}\n`;
+  if (useMemories) {
+    const memories = await getMemories(env.KV, chatId);
+    if (memories.length > 0) {
+      prefsHint += `\n用户专属记忆规则（必须严格遵守）：\n${memories.map(m => `- ${m}`).join('\n')}\n`;
+    }
   }
-
   const prompt = PROMPT_CLASSIFY(existingHint, prefsHint, text);
 
   const raw = await callAI(
@@ -400,7 +413,12 @@ async function classifyImage(fileId, isDocImage, token, env, chatId) {
   const model = isDocImage
     ? (env.VISION_MODEL_DOC || DEFAULT_VISION_MODEL_DOC)
     : (env.VISION_MODEL_PHOTO || DEFAULT_VISION_MODEL_PHOTO);
-
+  
+  const memories = await getMemories(env.KV, chatId);
+  const memoryHint = memories.length 
+    ? `\n用户提供的参考特征（若图片符合优先使用此描述）：\n${memories.map(m => `- ${m}`).join('\n')}`
+    : '';
+  
   const desc = await callAI(
     env.VISION_BASE_URL || DEFAULT_VISION_BASE_URL,
     env.VISION_API_KEY,
@@ -409,15 +427,15 @@ async function classifyImage(fileId, isDocImage, token, env, chatId) {
       role: 'user',
       content: [
         { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${base64}` } },
-        { type: 'text', text: PROMPT_IMAGE_DESCRIBE },
+        { type: 'text', text: PROMPT_IMAGE_DESCRIBE + memoryHint },
       ],
     }], 100
   );
-  const imgResult = await classifyText(desc, env, chatId);
+  const imgResult = await classifyText(desc, env, chatId, true); 
+  
   imgResult.confidence = Math.max(imgResult.confidence ?? 0, 0.75);
   return { ...imgResult, imageDesc: desc };
 }
-
 // ─── 提取消息内容 ─────────────────────────────────────────────────────────────
 
 function extractContent(msg) {
@@ -461,8 +479,8 @@ async function handleDefaultTopicMessage(msg, env, ctx) {
         const transcript = await speechToText(token, fileId, env);
         contentToSave = transcript || '（语音，转录失败）';
         contentType   = 'voice';
-        result = transcript
-          ? await classifyText(transcript, env, chatId)
+        result = transcript 
+          ? await classifyText(transcript, env, chatId, false)
           : { category: '语音', summary: '语音消息', confidence: 0.5 };
       } else {
         contentToSave = '（语音消息）';
@@ -492,7 +510,7 @@ async function handleDefaultTopicMessage(msg, env, ctx) {
     } else {
       contentToSave = text;
       contentType   = 'text';
-      result = await classifyText(text, env, chatId);
+      result = await classifyText(text, env, chatId, false); 
     }
   } catch (e) {
     console.error('classify error:', e);
