@@ -21,10 +21,10 @@ jobs:
         run: |
           echo "${{secrets.TELEGRAM_BOT_TOKEN}}" | npx wrangler secret put TELEGRAM_BOT_TOKEN
           echo "${{secrets.AI_API_KEY}}"         | npx wrangler secret put AI_API_KEY
-          if [-n "$VISION_API_KEY"]; then
+          if [ -n "$VISION_API_KEY"]; then
             echo "$VISION_API_KEY" | npx wrangler secret put VISION_API_KEY
           fi
-          if [-n "$SPEECH_API_KEY"]; then
+          if [ -n "$SPEECH_API_KEY"]; then
             echo "$SPEECH_API_KEY" | npx wrangler secret put SPEECH_API_KEY
           fi
         env:
