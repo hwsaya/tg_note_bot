@@ -20,11 +20,17 @@ AI_BASE_URL = "https://api.deepseek.com/v1"
 AI_MODEL    = "deepseek-chat"
 
 # 图片识别（硅基流动，免费）
-VISION_BASE_URL      = "https://api.siliconflow.cn/v1"
-VISION_MODEL_PHOTO   = "Qwen/Qwen2.5-VL-7B-Instruct"   # 普通照片
-VISION_MODEL_DOC     = "PaddleOCR-VL-1.5"               # 截图/文字图片
+VISION_BASE_URL    = "https://api.siliconflow.cn/v1"
+VISION_MODEL_PHOTO = "Qwen/Qwen2.5-VL-7B-Instruct"   # 普通照片
+VISION_MODEL_DOC   = "PaddleOCR-VL-1.5"               # 截图/文字图片
+
+# 语音转文字（硅基流动，免费，填了 SPEECH_API_KEY 自动启用）
+SPEECH_BASE_URL = "https://api.siliconflow.cn/v1"
+SPEECH_MODEL    = "FunAudioLLM/SenseVoiceSmall"
 
 # ── 密钥（在 GitHub Secrets 里填，不要写在这里）────────────────────────────────
 # TELEGRAM_BOT_TOKEN → GitHub Secrets
 # AI_API_KEY         → GitHub Secrets（DeepSeek Key）
-# VISION_API_KEY     → GitHub Secrets（硅基流动 Key）
+# VISION_API_KEY     → GitHub Secrets（硅基流动 Key，不填则跳过图片识别）
+# SPEECH_API_KEY     → GitHub Secrets（硅基流动 Key，不填则跳过语音转文字）
+# 注意：VISION_API_KEY 和 SPEECH_API_KEY 可以用同一个硅基流动 Key
