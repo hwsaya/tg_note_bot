@@ -204,8 +204,8 @@ async function handleDefaultTopicMessage(msg, env) {
     return;
   }
 
-  const tagStr = tags?.length ? ` · ${tags.join(' · ')}` : '';
-  const footer = `\n\n<i>📁 ${category}${tagStr}</i>`;
+  const tagStr = '';
+  const footer = '';
 
   const isPlainText = text && !msg.photo && !msg.video && !msg.document && !msg.audio && !msg.voice;
   if (isPlainText) {
