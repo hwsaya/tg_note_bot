@@ -128,6 +128,17 @@ const buildPrefsPrompt = (prefs) => prefs.length
   ? `\n用户分类偏好（优先参考）：\n${prefs.map(p => `- 「${p.from}」→「${p.to}」`).join('\n')}\n`
   : '';
 
+const getMemories = async (kv, chatId) => {
+  const r = await kv.get(`memories:${chatId}`); return r ? JSON.parse(r) : [];
+};
+
+async function addMemory(kv, chatId, text) {
+  const mems = await getMemories(kv, chatId);
+  if (!mems.includes(text)) mems.push(text);
+  if (mems.length > 30) mems.shift(); // 最多记住 30 条核心规则，防止撑爆提示词
+  await kv.put(`memories:${chatId}`, JSON.stringify(mems));
+}
+
 // ─── KV：每日统计 ─────────────────────────────────────────────────────────────
 
 const todayKey = (chatId) => `stats:${chatId}:${new Date().toISOString().slice(0, 10)}`;
@@ -362,7 +373,12 @@ async function classifyText(text, env, chatId) {
   const existing = Object.keys(topicMap);
   const existingHint = existing.length ? `\n已有话题（优先复用）：${existing.join('、')}\n` : '';
   const prefs = await getPrefs(env.KV, chatId);
-  const prefsHint = buildPrefsPrompt(prefs);
+  let prefsHint = buildPrefsPrompt(prefs);
+  
+  const memories = await getMemories(env.KV, chatId);
+  if (memories.length > 0) {
+    prefsHint += `\n用户专属记忆规则（必须严格遵守）：\n${memories.map(m => `- ${m}`).join('\n')}\n`;
+  }
 
   const prompt = PROMPT_CLASSIFY(existingHint, prefsHint, text);
 
@@ -696,6 +712,10 @@ async function handlePendingInput(msg, pending, env) {
 
   if (pending.type === 'corr_ai_hint') {
     const userHint = msg.text.trim();
+    if (userHint.includes('记住')) {
+      await addMemory(env.KV, chatId, userHint);
+    }
+    
     await editMessageText(token, chatId, pending.notifMsgId, '🤖 AI 正在重新分类…');
 
     const topicMap = await getTopicMap(env.KV, chatId);
@@ -1212,8 +1232,11 @@ async function handleCommand(msg, env) {
   }
 
   if (cmd === '/clear_prefs') {
-    await env.KV.delete(`prefs:${chatId}`);
-    await sendMessage(token, chatId, '🗑️ 偏好已清空。', threadId);
+    await Promise.all([
+      env.KV.delete(`prefs:${chatId}`),
+      env.KV.delete(`memories:${chatId}`)
+    ]);
+    await sendMessage(token, chatId, '🗑️ 分类偏好与用户记忆规则已清空。', threadId);
     return;
   }
 
