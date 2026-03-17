@@ -833,9 +833,7 @@ async function startChat(msg, env) {
   const notes  = await getNotesByTopic(env.KV, chatId, await getTopicNameByThreadId(env.KV, chatId, threadId));
   const recent = notes.slice(-10);
   const contextText = recent.length
-    ? recent.map((n, i) => `[笔记${i + 1}] ${n.content}`).join('
-
-')
+    ? recent.map((n, i) => `[笔记${i + 1}] ` + n.content).join('\n\n')
     : '';
 
   const systemPrompt =
