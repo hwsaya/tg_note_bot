@@ -258,6 +258,20 @@ const getCorrection = async (kv, chatId, notifMsgId) => {
 const deleteCorrection = (kv, chatId, notifMsgId) =>
   kv.delete(`corr:${chatId}:${notifMsgId}`);
 
+// ─── KV：对话会话（临时，结束后删除）────────────────────────────────────────────
+// key: chat:{chatId}:{threadId}  → { noteContext, history: [{role, content}], startMsgIds: [] }
+
+const getChatSession = async (kv, chatId, threadId) => {
+  const r = await kv.get(`chat:${chatId}:${threadId}`);
+  return r ? JSON.parse(r) : null;
+};
+
+const saveChatSession = (kv, chatId, threadId, session) =>
+  kv.put(`chat:${chatId}:${threadId}`, JSON.stringify(session), { expirationTtl: 3600 }); // 1小时自动过期
+
+const deleteChatSession = (kv, chatId, threadId) =>
+  kv.delete(`chat:${chatId}:${threadId}`);
+
 // ─── 文件下载 ─────────────────────────────────────────────────────────────────
 
 async function downloadFile(token, fileId) {
@@ -503,13 +517,11 @@ async function handleDefaultTopicMessage(msg, env) {
   }
 
   // 置信度正常时 5 秒后自动删通知
-  if (notifMsgId) {
+  if (notifMsgId && !lowConf) {
     (async () => {
-      await new Promise(res => setTimeout(res, lowConf ? 120000 : 5000));
-      await Promise.all([
-        deleteMessage(token, chatId, notifMsgId),
-        deleteCorrection(env.KV, chatId, notifMsgId),
-      ]);
+      await new Promise(res => setTimeout(res, 5000));
+      await deleteMessage(token, chatId, notifMsgId);
+      await deleteCorrection(env.KV, chatId, notifMsgId);
     })();
   }
 }
@@ -753,6 +765,27 @@ export default {
           } else {
             await handleDefaultTopicMessage(msg, env);
           }
+        } else if (!isDefaultTopic(msg) && msg.text) {
+          // 分类话题里的对话处理
+          const chatId   = String(msg.chat.id);
+          const threadId = String(msg.message_thread_id);
+          const text     = msg.text.trim();
+
+          if (text === '结束对话') {
+            const session = await getChatSession(env.KV, chatId, threadId);
+            if (session) {
+              await endChat(msg, session, env);
+            }
+          } else {
+            const session = await getChatSession(env.KV, chatId, threadId);
+            if (session) {
+              // 已有会话 → 继续对话
+              await continueChat(msg, session, env);
+            } else if (msg.reply_to_message) {
+              // 引用回复 → 开始新对话
+              await startChat(msg, env);
+            }
+          }
         }
       }
     } catch (e) {
@@ -780,6 +813,180 @@ export default {
     }
   },
 };
+
+// ─── 对话功能 ────────────────────────────────────────────────────────────────
+
+async function startChat(msg, env) {
+  const { chat, message_id, reply_to_message, text } = msg;
+  const chatId   = String(chat.id);
+  const threadId = String(msg.message_thread_id);
+  const token    = env.TELEGRAM_BOT_TOKEN;
+
+  // 读取被引用消息的内容
+  const quotedText = reply_to_message?.text || reply_to_message?.caption || '';
+  if (!quotedText) {
+    await sendMessage(token, chatId, '⚠️ 请引用一条有文字内容的笔记来开始对话。', msg.message_thread_id);
+    return;
+  }
+
+  // 读取该话题最近 10 条笔记全文作为上下文
+  const notes  = await getNotesByTopic(env.KV, chatId, await getTopicNameByThreadId(env.KV, chatId, threadId));
+  const recent = notes.slice(-10);
+  const contextText = recent.length
+    ? recent.map((n, i) => `[笔记${i + 1}] ${n.content}`).join('
+
+')
+    : '';
+
+  const systemPrompt =
+    `你是用户的笔记助手。以下是该话题的相关笔记内容，作为背景参考：
+
+${contextText}
+
+` +
+    `用户正在针对以下这条笔记和你对话：
+「${quotedText}」
+
+` +
+    `请基于这些内容回答用户的问题。回答简洁、有用。`;
+
+  // 构建初始历史
+  const history = [{ role: 'user', content: text }];
+
+  // 调用 AI
+  const aiReply = await callAI(
+    env.AI_BASE_URL || 'https://api.deepseek.com/v1',
+    env.AI_API_KEY,
+    env.AI_MODEL || 'deepseek-chat',
+    [{ role: 'system', content: systemPrompt }, ...history],
+    800
+  );
+
+  history.push({ role: 'assistant', content: aiReply });
+
+  // 保存会话
+  await saveChatSession(env.KV, chatId, threadId, {
+    noteContext: quotedText,
+    contextText,
+    history,
+    msgIds: [message_id],
+  });
+
+  // 发回复
+  const replyRes = await sendMessage(token, chatId, aiReply, msg.message_thread_id, {
+    reply_to_message_id: message_id,
+  });
+  const replyMsgId = replyRes?.result?.message_id;
+  if (replyMsgId) {
+    const session = await getChatSession(env.KV, chatId, threadId);
+    session.msgIds.push(replyMsgId);
+    await saveChatSession(env.KV, chatId, threadId, session);
+  }
+}
+
+async function continueChat(msg, session, env) {
+  const { chat, message_id, text } = msg;
+  const chatId   = String(chat.id);
+  const threadId = String(msg.message_thread_id);
+  const token    = env.TELEGRAM_BOT_TOKEN;
+
+  session.history.push({ role: 'user', content: text });
+  session.msgIds.push(message_id);
+
+  const systemPrompt =
+    `你是用户的笔记助手。以下是该话题的相关笔记内容，作为背景参考：
+
+${session.contextText || ''}
+
+` +
+    `用户正在针对以下这条笔记和你对话：
+「${session.noteContext}」
+
+` +
+    `请基于这些内容回答用户的问题。回答简洁、有用。`;
+
+  const aiReply = await callAI(
+    env.AI_BASE_URL || 'https://api.deepseek.com/v1',
+    env.AI_API_KEY,
+    env.AI_MODEL || 'deepseek-chat',
+    [{ role: 'system', content: systemPrompt }, ...session.history],
+    800
+  );
+
+  session.history.push({ role: 'assistant', content: aiReply });
+
+  await saveChatSession(env.KV, chatId, threadId, session);
+
+  const replyRes = await sendMessage(token, chatId, aiReply, msg.message_thread_id);
+  const replyMsgId = replyRes?.result?.message_id;
+  if (replyMsgId) {
+    session.msgIds.push(replyMsgId);
+    await saveChatSession(env.KV, chatId, threadId, session);
+  }
+}
+
+async function endChat(msg, session, env) {
+  const { chat, message_id } = msg;
+  const chatId   = String(chat.id);
+  const threadId = String(msg.message_thread_id);
+  const token    = env.TELEGRAM_BOT_TOKEN;
+
+  // 删除"结束对话"这条消息
+  await deleteMessage(token, chatId, message_id);
+
+  // 让 AI 总结对话，提炼有用内容
+  const historyText = session.history
+    .map(h => `${h.role === 'user' ? '我' : 'AI'}：${h.content}`)
+    .join('
+
+');
+
+  const summaryPrompt =
+    `以下是一段针对笔记的对话记录，请提炼其中有价值的内容，` +
+    `以简洁清晰的笔记形式输出（不超过200字），去掉对话语气，只保留有用的结论、补充或洞察：
+
+` +
+    `原始笔记：「${session.noteContext}」
+
+对话记录：
+${historyText}`;
+
+  let summary = '';
+  try {
+    summary = await callAI(
+      env.AI_BASE_URL || 'https://api.deepseek.com/v1',
+      env.AI_API_KEY,
+      env.AI_MODEL || 'deepseek-chat',
+      [{ role: 'user', content: summaryPrompt }],
+      400
+    );
+  } catch(e) {
+    console.error('summary error:', e);
+    summary = '（总结生成失败）';
+  }
+
+  // 并行删除所有对话消息
+  await Promise.all(session.msgIds.map(id => deleteMessage(token, chatId, id)));
+
+  // 发摘要到话题
+  const topicName = await getTopicNameByThreadId(env.KV, chatId, threadId);
+  const summaryMsg = `📝 <b>对话摘要</b>
+
+${summary}`;
+  await sendMessage(token, chatId, summaryMsg, msg.message_thread_id);
+
+  // 存摘要到 KV
+  await saveNote(env.KV, chatId, topicName || '对话摘要', `[对话摘要] ${summary}`, 'summary');
+
+  // 删除会话
+  await deleteChatSession(env.KV, chatId, threadId);
+}
+
+// 根据 threadId 反查话题名
+async function getTopicNameByThreadId(kv, chatId, threadId) {
+  const map = await getTopicMap(kv, chatId);
+  return Object.keys(map).find(k => String(map[k]) === String(threadId)) || null;
+}
 
 // ─── 命令处理 ─────────────────────────────────────────────────────────────────
 
