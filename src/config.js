@@ -35,8 +35,8 @@ export const CHAT_CONTEXT_NOTE_COUNT = 10;
 export const DEFAULT_AI_BASE_URL     = 'https://api.deepseek.com/v1';
 export const DEFAULT_AI_MODEL        = 'deepseek-chat';
 export const DEFAULT_VISION_BASE_URL = 'https://api.siliconflow.cn/v1';
-export const DEFAULT_VISION_MODEL_PHOTO = 'Qwen/Qwen2.5-VL-7B-Instruct'; // 普通照片
-export const DEFAULT_VISION_MODEL_DOC   = 'PaddleOCR-VL-1.5';             // 截图/文字图片
+export const DEFAULT_VISION_MODEL_PHOTO = 'Qwen/Qwen3-VL-30B-A3B-Instruct'; // 普通照片
+export const DEFAULT_VISION_MODEL_DOC   = 'Qwen/Qwen3-VL-30B-A3B-Instruct';             // 截图/文字图片
 export const DEFAULT_SPEECH_BASE_URL = 'https://api.siliconflow.cn/v1';
 export const DEFAULT_SPEECH_MODEL    = 'FunAudioLLM/SenseVoiceSmall';     // 语音转文字
 
