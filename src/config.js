@@ -34,9 +34,9 @@ export const CHAT_CONTEXT_NOTE_COUNT = 10;
 
 export const DEFAULT_AI_BASE_URL     = 'https://api.deepseek.com/v1';
 export const DEFAULT_AI_MODEL        = 'deepseek-chat';
-export const DEFAULT_VISION_BASE_URL = 'https://api.siliconflow.cn/v1';
-export const DEFAULT_VISION_MODEL_PHOTO = 'Qwen/Qwen3-VL-30B-A3B-Instruct'; // 普通照片
-export const DEFAULT_VISION_MODEL_DOC   = 'Qwen/Qwen3-VL-30B-A3B-Instruct';             // 截图/文字图片
+export const DEFAULT_VISION_BASE_URL = 'https://ark.cn-beijing.volces.com/api/v3';
+export const DEFAULT_VISION_MODEL_PHOTO = 'doubao-1.5-vision-lite-250315'; // 普通照片
+export const DEFAULT_VISION_MODEL_DOC   = 'doubao-1.5-vision-lite-250315';             // 截图/文字图片
 export const DEFAULT_SPEECH_BASE_URL = 'https://api.siliconflow.cn/v1';
 export const DEFAULT_SPEECH_MODEL    = 'TeleAI/TeleSpeechASR';     // 语音转文字
 
