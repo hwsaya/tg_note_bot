@@ -146,6 +146,17 @@ const getCorrection = async (kv, chatId, notifMsgId) => {
 const deleteCorrection = (kv, chatId, notifMsgId) =>
   kv.delete(`corr:${chatId}:${notifMsgId}`);
 
+// ─── KV：待输入状态（自定义话题名）────────────────────────────────────────────
+
+const savePending = (kv, chatId, data) =>
+  kv.put(`pending:${chatId}`, JSON.stringify(data), { expirationTtl: 300 }); // 5分钟
+
+const getPending = async (kv, chatId) => {
+  const r = await kv.get(`pending:${chatId}`); return r ? JSON.parse(r) : null;
+};
+
+const deletePending = (kv, chatId) => kv.delete(`pending:${chatId}`);
+
 // ─── 图片下载转 base64 ────────────────────────────────────────────────────────
 
 async function getFileAsBase64(token, fileId) {
@@ -313,7 +324,7 @@ async function handleCallbackQuery(query, env) {
 
   await answerCallbackQuery(token, query.id);
 
-  // 显示话题选择
+  // 显示纠错选项
   if (data === 'corr_show') {
     const corr = await getCorrection(env.KV, chatId, notifMsgId);
     if (!corr) {
@@ -322,41 +333,66 @@ async function handleCallbackQuery(query, env) {
     }
     const map = await getTopicMap(env.KV, chatId);
     const entries = Object.entries(map).filter(([, tid]) => tid !== corr.movedThreadId);
-    if (!entries.length) {
-      await editMessageText(token, chatId, notifMsgId, '⚠️ 没有其他话题可选');
-      return;
-    }
-    // 每行2个按钮
-    const rows = [];
+
+    const rows = [
+      // 顶部两个特殊选项
+      [{ text: '🤖 让 AI 重新分类', callback_data: 'corr_ai' }],
+      [{ text: '✏️ 自定义话题名', callback_data: 'corr_custom' }],
+    ];
+    // 现有话题，每行2个
     for (let i = 0; i < entries.length; i += 2) {
       rows.push(entries.slice(i, i + 2).map(([name, tid]) => ({
         text: `📁 ${name}`,
-        callback_data: `cm:${tid}`,  // cm = corr_move
+        callback_data: `cm:${tid}`,
       })));
     }
     rows.push([{ text: '❌ 取消', callback_data: 'corr_cancel' }]);
+
     await editMessageText(token, chatId, notifMsgId,
-      `当前：<b>${corr.topicName}</b>\n选择新话题：`,
+      `当前：<b>${corr.topicName}</b>\n\n选择纠正方式：`,
       { inline_keyboard: rows }
     );
     return;
   }
 
-  // 移动到新话题
+  // AI 重新分类：先请用户输入提示词
+  if (data === 'corr_ai') {
+    const corr = await getCorrection(env.KV, chatId, notifMsgId);
+    if (!corr) { await editMessageText(token, chatId, notifMsgId, '⚠️ 纠错已过期'); return; }
+
+    await savePending(env.KV, chatId, { type: 'corr_ai_hint', notifMsgId, ...corr });
+    await editMessageText(token, chatId, notifMsgId,
+      `🤖 <b>让 AI 重新分类</b>\n\n` +
+      `当前分类：<b>${corr.topicName}</b>\n内容：<i>${corr.preview}</i>\n\n` +
+      `请在默认话题发一条消息，告诉 AI 这条内容是什么用途。\n` +
+      `例如："这是工作相关的技术笔记" 或 "这是购物清单"`,
+      { inline_keyboard: [[{ text: '❌ 取消', callback_data: 'corr_cancel' }]] }
+    );
+    return;
+  }
+
+  // 自定义话题名
+  if (data === 'corr_custom') {
+    const corr = await getCorrection(env.KV, chatId, notifMsgId);
+    if (!corr) { await editMessageText(token, chatId, notifMsgId, '⚠️ 纠错已过期'); return; }
+    // 保存等待输入状态
+    await savePending(env.KV, chatId, { type: 'corr_custom', notifMsgId, ...corr });
+    await editMessageText(token, chatId, notifMsgId,
+      `✏️ <b>自定义话题名</b>\n\n请在默认话题回复一条消息，输入新的话题名称（2-6字）：`,
+      { inline_keyboard: [[{ text: '❌ 取消', callback_data: 'corr_cancel' }]] }
+    );
+    return;
+  }
+
+  // 移动到现有话题
   if (data.startsWith('cm:')) {
     const newThreadId = Number(data.slice(3));
     const corr = await getCorrection(env.KV, chatId, notifMsgId);
-    if (!corr) {
-      await editMessageText(token, chatId, notifMsgId, '⚠️ 纠错已过期');
-      return;
-    }
-    // 找新话题名
+    if (!corr) { await editMessageText(token, chatId, notifMsgId, '⚠️ 纠错已过期'); return; }
     const map = await getTopicMap(env.KV, chatId);
     const newTopicName = Object.keys(map).find(k => map[k] === newThreadId) || '未知';
-    // 复制到新话题，删除旧话题消息
     await copyMessage(token, chatId, chatId, corr.movedMsgId, newThreadId);
     await deleteMessage(token, chatId, corr.movedMsgId);
-    // 记录偏好、更新统计
     await addPref(env.KV, chatId, corr.topicName, newTopicName);
     await incrementStats(env.KV, chatId, newTopicName);
     await deleteCorrection(env.KV, chatId, notifMsgId);
@@ -370,6 +406,7 @@ async function handleCallbackQuery(query, env) {
   if (data === 'corr_cancel') {
     const corr = await getCorrection(env.KV, chatId, notifMsgId);
     await deleteCorrection(env.KV, chatId, notifMsgId);
+    await deletePending(env.KV, chatId);
     await editMessageText(token, chatId, notifMsgId,
       `✅ <b>${corr?.topicName || '已归档'}</b>  <i>${corr?.preview || ''}</i>`
     );
@@ -398,7 +435,13 @@ export default {
         if (msg.text?.startsWith('/')) {
           await handleCommand(msg, env);
         } else if (isDefaultTopic(msg)) {
-          await handleDefaultTopicMessage(msg, env);
+          // 检查是否在等待自定义话题名输入
+          const pending = await getPending(env.KV, String(msg.chat.id));
+          if ((pending?.type === 'corr_custom' || pending?.type === 'corr_ai_hint') && msg.text) {
+            await handleCustomTopicInput(msg, pending, env);
+          } else {
+            await handleDefaultTopicMessage(msg, env);
+          }
         }
       }
     } catch (e) {
@@ -427,6 +470,82 @@ export default {
     }
   },
 };
+
+// ─── 自定义话题名输入处理 ────────────────────────────────────────────────────────
+
+async function handleCustomTopicInput(msg, pending, env) {
+  const chatId = String(msg.chat.id);
+  const token  = env.TELEGRAM_BOT_TOKEN;
+
+  await deletePending(env.KV, chatId);
+  await deleteMessage(token, chatId, msg.message_id);
+
+  // 自定义话题名
+  if (pending.type === 'corr_custom') {
+    const newName = msg.text.trim().slice(0, 20);
+    const newThreadId = await getOrCreateTopic(env.KV, token, chatId, newName);
+    if (!newThreadId) {
+      await sendMessage(token, chatId, `⚠️ 无法创建话题「${newName}」`);
+      return;
+    }
+    await copyMessage(token, chatId, chatId, pending.movedMsgId, newThreadId);
+    await deleteMessage(token, chatId, pending.movedMsgId);
+    await addPref(env.KV, chatId, pending.topicName, newName);
+    await incrementStats(env.KV, chatId, newName);
+    await deleteCorrection(env.KV, chatId, pending.notifMsgId);
+    await editMessageText(token, chatId, pending.notifMsgId,
+      `✅ <b>${newName}</b>  <i>${pending.preview}</i>\n<i>自定义话题，AI 已记录偏好</i>`
+    );
+    return;
+  }
+
+  // AI 重新分类（带用户提示词）
+  if (pending.type === 'corr_ai_hint') {
+    const userHint = msg.text.trim();
+
+    await editMessageText(token, chatId, pending.notifMsgId, '🤖 AI 正在重新分类…');
+
+    const topicMap = await getTopicMap(env.KV, chatId);
+    const existing = Object.keys(topicMap);
+    const prefs    = await getPrefs(env.KV, chatId);
+    const existingHint = existing.length ? `\n已有话题（优先复用）：${existing.join('、')}\n` : '';
+    const prefsHint    = buildPrefsPrompt(prefs);
+
+    const prompt = `你是笔记分类助手。${existingHint}${prefsHint}
+注意：上次将此内容分到「${pending.topicName}」被用户否定，请换一个更合适的话题。
+用户提示：${userHint}
+规则：话题名2-6字、具体；不用"其他""杂项"。
+只输出JSON：{"category":"话题名","summary":"摘要不超过20字"}
+内容：${pending.preview}`;
+
+    let newCategory = '未分类';
+    try {
+      const raw = await callAI(
+        env.AI_BASE_URL || 'https://api.deepseek.com/v1',
+        env.AI_API_KEY,
+        env.AI_MODEL || 'deepseek-chat',
+        [{ role: 'user', content: prompt }], 80
+      );
+      const parsed = parseJSON(raw);
+      if (parsed?.category) newCategory = parsed.category;
+    } catch(e) { console.error('re-classify error:', e); }
+
+    const newThreadId = await getOrCreateTopic(env.KV, token, chatId, newCategory);
+    if (!newThreadId) {
+      await editMessageText(token, chatId, pending.notifMsgId, `⚠️ 无法创建话题「${newCategory}」`);
+      return;
+    }
+    await copyMessage(token, chatId, chatId, pending.movedMsgId, newThreadId);
+    await deleteMessage(token, chatId, pending.movedMsgId);
+    await addPref(env.KV, chatId, pending.topicName, newCategory);
+    await incrementStats(env.KV, chatId, newCategory);
+    await deleteCorrection(env.KV, chatId, pending.notifMsgId);
+    await editMessageText(token, chatId, pending.notifMsgId,
+      `✅ <b>${newCategory}</b>  <i>${pending.preview}</i>\n<i>AI 重新分类，已记录偏好</i>`
+    );
+    return;
+  }
+}
 
 // ─── 命令处理 ─────────────────────────────────────────────────────────────────
 
