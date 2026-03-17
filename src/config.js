@@ -22,7 +22,7 @@ export const CLEAN_DEFAULT_DAYS = 30;
 export const CHAT_EXPIRE_SECONDS = 3600; // 1 小时
 
 // 分类通知自动消失时间（毫秒），置信度正常时生效
-export const NOTIFY_AUTO_DELETE_MS = 60000; // 1 分钟
+export const NOTIFY_AUTO_DELETE_MS = 15000; // 15秒
 
 // 置信度低时通知保留时间（毫秒），给用户时间点纠错按钮
 export const NOTIFY_LOW_CONF_DELETE_MS = 60000; // 1 分钟
