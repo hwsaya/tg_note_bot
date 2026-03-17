@@ -901,7 +901,7 @@ ${session.contextText || ''}
 「${session.noteContext}」
 
 ` +
-    `请基于这些内容回答用户的问题。回答简洁、有用。`;
+    `请基于这些内容回答用户的问题。回答简洁、有用，不要使用 **加粗** 格式。`;
 
   const aiReply = await callAI(
     env.AI_BASE_URL || 'https://api.deepseek.com/v1',
@@ -939,7 +939,7 @@ async function endChat(msg, session, env) {
 
   const summaryPrompt =
     `以下是一段针对笔记的对话记录，请提炼其中有价值的内容，` +
-    `以简洁清晰的笔记形式输出（不超过200字），去掉对话语气，只保留有用的结论、补充或洞察：\n\n原始笔记：「${session.noteContext}」\n\n对话记录：\n${historyText}`;
+    `以简洁清晰的笔记形式输出（不超过200字），去掉对话语气，只保留有用的结论、补充或洞察，不要使用 **加粗** 格式：\n\n原始笔记：「${session.noteContext}」\n\n对话记录：\n${historyText}`;
 
   let summary = '';
   try {
