@@ -18,7 +18,7 @@
 
 const TG_API = (token, method) => `https://api.telegram.org/bot${token}/${method}`;
 
-// ─── Telegram API 封装 ────────────────────────────────────────────────────────
+// Telegram API 封装
 
 async function tgCall(token, method, body = {}) {
   const res = await fetch(TG_API(token, method), {
