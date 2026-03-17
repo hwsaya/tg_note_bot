@@ -846,7 +846,7 @@ ${contextText}
 「${quotedText}」
 
 ` +
-    `请基于这些内容回答用户的问题。回答简洁、有用。`;
+    `请基于这些内容回答用户的问题。回答简洁、有用，不要使用 **加粗** 格式。`;
 
   // 构建初始历史
   const history = [{ role: 'user', content: text }];
