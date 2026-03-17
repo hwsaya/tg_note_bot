@@ -442,8 +442,10 @@ export default {
       if (isForumGroup(msg)) {
         // 引用回复"删除"→ 静默删除 bot 消息和用户消息
         if (msg.text?.trim() === '删除' && msg.reply_to_message) {
-          await deleteMessage(env.TELEGRAM_BOT_TOKEN, msg.chat.id, msg.reply_to_message.message_id);
-          await deleteMessage(env.TELEGRAM_BOT_TOKEN, msg.chat.id, msg.message_id);
+          await Promise.all([
+          deleteMessage(env.TELEGRAM_BOT_TOKEN, msg.chat.id, msg.reply_to_message.message_id),
+          deleteMessage(env.TELEGRAM_BOT_TOKEN, msg.chat.id, msg.message_id),
+          ]);
           return new Response('OK');
         }
         if (msg.text?.startsWith('/')) {
