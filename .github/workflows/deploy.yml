@@ -19,14 +19,18 @@ jobs:
 
       - name: Push secrets to Cloudflare
         run: |
-          echo "${{ secrets.TELEGRAM_BOT_TOKEN }}" | npx wrangler secret put TELEGRAM_BOT_TOKEN
-          echo "${{ secrets.AI_API_KEY }}"         | npx wrangler secret put AI_API_KEY
-          if [ -n "$VISION_API_KEY" ]; then
+          echo "${{secrets.TELEGRAM_BOT_TOKEN}}" | npx wrangler secret put TELEGRAM_BOT_TOKEN
+          echo "${{secrets.AI_API_KEY}}"         | npx wrangler secret put AI_API_KEY
+          if [-n "$VISION_API_KEY"]; then
             echo "$VISION_API_KEY" | npx wrangler secret put VISION_API_KEY
           fi
+          if [-n "$SPEECH_API_KEY"]; then
+            echo "$SPEECH_API_KEY" | npx wrangler secret put SPEECH_API_KEY
+          fi
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
-          VISION_API_KEY: ${{ secrets.VISION_API_KEY }}
+          CLOUDFLARE_API_TOKEN: ${{secrets.CF_API_TOKEN}}
+          VISION_API_KEY: ${{secrets.VISION_API_KEY}}
+          SPEECH_API_KEY: ${{secrets.SPEECH_API_KEY}}
 
       - name: Deploy to Cloudflare Workers
         run: npx wrangler deploy
