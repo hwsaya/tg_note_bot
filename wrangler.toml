@@ -3,30 +3,28 @@ main = "src/worker.js"
 compatibility_date = "2024-09-23"
 compatibility_flags = ["nodejs_compat"]
 
-# KV 命名空间 
-# 在 CF 控制台 Workers & Pages → KV 里创建，把 ID 填到下面
+# ── 定时任务（每日摘要）─────────────────────────────────────────────────────────
+[triggers]
+crons = ["0 12 * * *"]   # UTC 12:00 = 北京时间 20:00
 
+# ── KV 命名空间 ─────────────────────────────────────────────────────────────────
 [[kv_namespaces]]
 binding = "KV"
 id = "25f140b1fdfc4473a6d32bcebc16a892"
 
-# ── AI 配置
+# ── AI 配置 ─────────────────────────────────────────────────────────────────────
 [vars]
 
-# 默认：DeepSeek
+# 文字分类（DeepSeek，便宜快速）
 AI_BASE_URL = "https://api.deepseek.com/v1"
 AI_MODEL    = "deepseek-chat"
 
-# 其他可选服务商，取消注释替换上面两行即可：
+# 图片识别（硅基流动，免费）
+VISION_BASE_URL      = "https://api.siliconflow.cn/v1"
+VISION_MODEL_PHOTO   = "Qwen/Qwen2.5-VL-7B-Instruct"   # 普通照片
+VISION_MODEL_DOC     = "PaddleOCR-VL-1.5"               # 截图/文字图片
 
-# OpenAI
-# AI_BASE_URL = "https://api.openai.com/v1"
-# AI_MODEL    = "gpt-4o-mini"
-
-# Groq（免费额度充足，速度极快）
-# AI_BASE_URL = "https://api.groq.com/openai/v1"
-# AI_MODEL    = "llama-3.3-70b-versatile"
-
-# 硅基流动（国内访问友好）
-# AI_BASE_URL = "https://api.siliconflow.cn/v1"
-# AI_MODEL    = "Qwen/Qwen2.5-7B-Instruct"
+# ── 密钥（在 GitHub Secrets 里填，不要写在这里）────────────────────────────────
+# TELEGRAM_BOT_TOKEN → GitHub Secrets
+# AI_API_KEY         → GitHub Secrets（DeepSeek Key）
+# VISION_API_KEY     → GitHub Secrets（硅基流动 Key）
