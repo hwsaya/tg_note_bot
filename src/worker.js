@@ -141,17 +141,6 @@ const buildPrefsPrompt = (prefs) => prefs.length
   ? `\n用户分类偏好（优先参考）：\n${prefs.map(p => `- 「${p.from}」→「${p.to}」`).join('\n')}\n`
   : '';
 
-const getMemories = async (kv, chatId) => {
-  const r = await kv.get(`memories:${chatId}`); return r ? JSON.parse(r) : [];
-};
-
-async function addMemory(kv, chatId, text) {
-  const mems = await getMemories(kv, chatId);
-  if (!mems.includes(text)) mems.push(text);
-  if (mems.length > 30) mems.shift(); // 最多记住 30 条核心规则，防止撑爆提示词
-  await kv.put(`memories:${chatId}`, JSON.stringify(mems));
-}
-
 // ─── KV：每日统计 ─────────────────────────────────────────────────────────────
 
 const todayKey = (chatId) => `stats:${chatId}:${new Date().toISOString().slice(0, 10)}`;
