@@ -397,7 +397,9 @@ async function classifyImage(fileId, isDocImage, token, env, chatId) {
       ],
     }], 100
   );
-  return { ...(await classifyText(desc, env, chatId)), imageDesc: desc };
+  const imgResult = await classifyText(desc, env, chatId);
+  imgResult.confidence = Math.max(imgResult.confidence ?? 0, 0.75);
+  return { ...imgResult, imageDesc: desc };
 }
 
 // ─── 提取消息内容 ─────────────────────────────────────────────────────────────
@@ -416,7 +418,7 @@ function extractContent(msg) {
 
 // ─── 默认话题消息处理 ──────────────────────────────────────────────────────────
 
-async function handleDefaultTopicMessage(msg, env) {
+async function handleDefaultTopicMessage(msg, env, ctx) {
   const { chat, message_id } = msg;
   const chatId = String(chat.id);
   const token  = env.TELEGRAM_BOT_TOKEN;
@@ -457,8 +459,9 @@ async function handleDefaultTopicMessage(msg, env) {
         result = await classifyImage(fileId, false, token, env, chatId);
         contentToSave = result.imageDesc ? `（图片）${result.imageDesc}` : '（图片）';
       } else {
+        // 无视觉 Key：直接归入「图片」话题，不调 AI
         contentToSave = text ? `（图片）${text}` : '（图片）';
-        result = await classifyText(text || '图片', env, chatId);
+        result = { category: '图片', summary: '图片', confidence: 1 };
       }
       contentType = 'image';
     } else if (document?.mime_type?.startsWith('image/')) {
@@ -467,7 +470,7 @@ async function handleDefaultTopicMessage(msg, env) {
         contentToSave = result.imageDesc ? `（图片）${result.imageDesc}` : '（图片）';
       } else {
         contentToSave = text ? `（图片）${text}` : '（图片）';
-        result = await classifyText(text || '图片', env, chatId);
+        result = { category: '图片', summary: '图片', confidence: 1 };
       }
       contentType = 'image';
     } else {
@@ -533,13 +536,15 @@ async function handleDefaultTopicMessage(msg, env) {
     });
   }
 
-  // 置信度正常时 5 秒后自动删通知
-  if (notifMsgId && !lowConf) {
-    (async () => {
-      await new Promise(res => setTimeout(res, 5000));
-      await deleteMessage(token, chatId, notifMsgId);
-      await deleteCorrection(env.KV, chatId, notifMsgId);
-    })();
+  // 定时删通知：ctx.waitUntil 确保 Worker 不提前终止
+  if (notifMsgId && ctx) {
+    ctx.waitUntil((async () => {
+      await new Promise(res => setTimeout(res, lowConf ? NOTIFY_LOW_CONF_DELETE_MS : NOTIFY_AUTO_DELETE_MS));
+      await Promise.all([
+        deleteMessage(token, chatId, notifMsgId),
+        deleteCorrection(env.KV, chatId, notifMsgId),
+      ]);
+    })());
   }
 }
 
@@ -626,8 +631,8 @@ async function handleCallbackQuery(query, env) {
     if (!corr) { await editMessageText(token, chatId, notifMsgId, '⚠️ 纠错已过期'); return; }
     const map = await getTopicMap(env.KV, chatId);
     const newTopicName = Object.keys(map).find(k => map[k] === newThreadId) || '未知';
-    await copyMessage(token, chatId, chatId, corr.movedMsgId, newThreadId);
-    await deleteMessage(token, chatId, corr.movedMsgId);
+    const copyRes = await copyMessage(token, chatId, chatId, corr.movedMsgId, newThreadId);
+    if (copyRes?.ok) await deleteMessage(token, chatId, corr.movedMsgId);
     await addPref(env.KV, chatId, corr.topicName, newTopicName);
     await incrementStats(env.KV, chatId, newTopicName);
     // 更新笔记话题
@@ -670,8 +675,8 @@ async function handlePendingInput(msg, pending, env) {
     const newName = msg.text.trim().slice(0, 20);
     const newThreadId = await getOrCreateTopic(env.KV, token, chatId, newName);
     if (!newThreadId) { await sendMessage(token, chatId, `⚠️ 无法创建话题「${newName}」`); return; }
-    await copyMessage(token, chatId, chatId, pending.movedMsgId, newThreadId);
-    await deleteMessage(token, chatId, pending.movedMsgId);
+    const cr1 = await copyMessage(token, chatId, chatId, pending.movedMsgId, newThreadId);
+    if (cr1?.ok) await deleteMessage(token, chatId, pending.movedMsgId);
     await addPref(env.KV, chatId, pending.topicName, newName);
     await incrementStats(env.KV, chatId, newName);
     if (pending.noteId) {
@@ -718,8 +723,8 @@ async function handlePendingInput(msg, pending, env) {
       await editMessageText(token, chatId, pending.notifMsgId, `⚠️ 无法创建话题「${newCategory}」`);
       return;
     }
-    await copyMessage(token, chatId, chatId, pending.movedMsgId, newThreadId);
-    await deleteMessage(token, chatId, pending.movedMsgId);
+    const cr2 = await copyMessage(token, chatId, chatId, pending.movedMsgId, newThreadId);
+    if (cr2?.ok) await deleteMessage(token, chatId, pending.movedMsgId);
     await addPref(env.KV, chatId, pending.topicName, newCategory);
     await incrementStats(env.KV, chatId, newCategory);
     if (pending.noteId) {
@@ -745,7 +750,7 @@ const isForumGroup   = (msg) => msg.chat?.is_forum === true;
 // ─── Worker 入口 ──────────────────────────────────────────────────────────────
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     if (request.method !== 'POST') return new Response('Telegram Note Bot v5 ✓');
     try {
       const body = await request.json();
@@ -800,7 +805,7 @@ export default {
           if ((pending?.type === 'corr_custom' || pending?.type === 'corr_ai_hint') && msg.text) {
             await handlePendingInput(msg, pending, env);
           } else {
-            await handleDefaultTopicMessage(msg, env);
+            await handleDefaultTopicMessage(msg, env, ctx);
           }
         } else if (!isDefaultTopic(msg) && msg.text) {
           // 分类话题里的对话处理
