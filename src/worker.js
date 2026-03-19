@@ -583,6 +583,8 @@ async function handleDefaultTopicMessage(msg, env, ctx) {
   if (notifMsgId && ctx) {
     ctx.waitUntil((async () => {
       await new Promise(res => setTimeout(res, lowConf ? NOTIFY_LOW_CONF_DELETE_MS : NOTIFY_AUTO_DELETE_MS));
+      const corr = await getCorrection(env.KV, chatId, notifMsgId);
+      if (!corr || corr.interacted) return;
       await Promise.all([
         deleteMessage(token, chatId, notifMsgId),
         deleteCorrection(env.KV, chatId, notifMsgId),
@@ -604,6 +606,8 @@ async function handleCallbackQuery(query, env) {
   if (data === 'corr_show') {
     const corr = await getCorrection(env.KV, chatId, notifMsgId);
     if (!corr) { await editMessageText(token, chatId, notifMsgId, '⚠️ 纠错已过期'); return; }
+    corr.interacted = true;
+    await saveCorrection(env.KV, chatId, notifMsgId, corr);
     const rows = [
       [{ text: '🤖 让 AI 重新分类', callback_data: 'corr_ai'     }],
       [{ text: '✏️ 自定义话题名',   callback_data: 'corr_custom' }],
