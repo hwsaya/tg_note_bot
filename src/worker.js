@@ -273,6 +273,24 @@ async function removeSubscriber(kv, chatId) {
   await kv.put('subscribers', JSON.stringify(subs.filter(s => s.chatId !== chatId)));
 }
 
+// ─── KV：默认话题消息记录（用于"清除记录"）────────────────────────────────────────
+
+async function recordDefaultMsgs(kv, chatId, ...msgIds) {
+  const key = `defaultmsgs:${chatId}`;
+  const r   = await kv.get(key);
+  const ids = r ? JSON.parse(r) : [];
+  ids.push(...msgIds.filter(Boolean));
+  if (ids.length > 300) ids.splice(0, ids.length - 300);
+  await kv.put(key, JSON.stringify(ids), { expirationTtl: 86400 * 7 });
+}
+
+async function popDefaultMsgs(kv, chatId) {
+  const key = `defaultmsgs:${chatId}`;
+  const r   = await kv.get(key);
+  await kv.delete(key);
+  return r ? JSON.parse(r) : [];
+}
+
 // ─── KV：待输入状态 ───────────────────────────────────────────────────────────
 
 const savePending = (kv, chatId, data) =>
@@ -558,6 +576,7 @@ async function handleDefaultTopicMessage(msg, env, ctx) {
     await saveCorrection(env.KV, chatId, notifMsgId, {
       movedMsgId, movedThreadId: threadId, topicName: category, preview, noteId,
     });
+    await recordDefaultMsgs(env.KV, chatId, notifMsgId);
   }
 
   // 定时删通知：ctx.waitUntil 确保 Worker 不提前终止
@@ -793,6 +812,14 @@ export default {
 
       if (isForumGroup(msg)) {
         // 引用回复"删除" → 并行静默删除
+        if (msg.text?.trim() === '清除记录' && isDefaultTopic(msg)) {
+          const chatId = String(msg.chat.id);
+          await deleteMessage(env.TELEGRAM_BOT_TOKEN, chatId, msg.message_id);
+          const ids = await popDefaultMsgs(env.KV, chatId);
+          await Promise.all(ids.map(id => deleteMessage(env.TELEGRAM_BOT_TOKEN, chatId, id)));
+          return new Response('OK');
+        }
+
         if (msg.text?.trim() === '删除' && msg.reply_to_message) {
           const chatId = String(msg.chat.id);
           // 并行删除两条消息
@@ -1047,9 +1074,18 @@ async function handleCommand(msg, env) {
   const parts    = text.trim().split(/\s+/);
   const cmd      = parts[0].split('@')[0];
 
+  if (isDefaultTopic(msg)) await recordDefaultMsgs(env.KV, chatId, msg.message_id);
+
+  // sendReply: 发消息并自动记录 Bot 回复 ID
+  const sendReply = async (txt, extra = {}) => {
+    const r = await sendMessage(token, chatId, txt, threadId, extra);
+    if (isDefaultTopic(msg) && r?.result?.message_id)
+      await recordDefaultMsgs(env.KV, chatId, r.result.message_id);
+    return r;
+  };
+
   if (cmd === '/start' || cmd === '/help') {
-    await sendMessage(token, chatId,
-      `🗂️ <b>笔记分类 Bot v5</b>\n\n` +
+    await sendReply(`🗂️ <b>笔记分类 Bot v5</b>\n\n` +
       `在「默认话题」发文字、图片、语音或转发消息，AI 自动分类。\n\n` +
       `<b>命令</b>\n` +
       `/topics — 查看所有话题\n` +
@@ -1075,9 +1111,8 @@ async function handleCommand(msg, env) {
   if (cmd === '/topics') {
     const map = await getTopicMap(env.KV, chatId);
     const entries = Object.entries(map);
-    if (!entries.length) { await sendMessage(token, chatId, '📂 还没有话题，发笔记自动创建。', threadId); return; }
-    await sendMessage(token, chatId,
-      `🗂️ <b>当前话题</b>（${entries.length} 个）\n\n${entries.map(([n]) => `  📁 ${n}`).join('\n')}`,
+    if (!entries.length) { await sendReply('📂 还没有话题，发笔记自动创建。'); return; }
+    await sendReply(`🗂️ <b>当前话题</b>（${entries.length} 个）\n\n${entries.map(([n]) => `  📁 ${n}`).join('\n')}`,
       threadId
     );
     return;
@@ -1090,50 +1125,50 @@ async function handleCommand(msg, env) {
       newName = parts.slice(1).join(' ');
       oldName = Object.keys(map).find(k => map[k] === threadId);
       tid = threadId;
-      if (!newName) { await sendMessage(token, chatId, '用法：<code>/rename 新话题名</code>', threadId); return; }
-      if (!oldName) { await sendMessage(token, chatId, '⚠️ 当前话题不在 Bot 记录里。', threadId); return; }
+      if (!newName) { await sendReply('用法：<code>/rename 新话题名</code>'); return; }
+      if (!oldName) { await sendReply('⚠️ 当前话题不在 Bot 记录里。'); return; }
     } else {
       oldName = parts[1]; newName = parts.slice(2).join(' ');
-      if (!oldName || !newName) { await sendMessage(token, chatId, '用法：<code>/rename 旧话题名 新话题名</code>', threadId); return; }
-      if (!map[oldName]) { await sendMessage(token, chatId, `⚠️ 找不到「${oldName}」`, threadId); return; }
+      if (!oldName || !newName) { await sendReply('用法：<code>/rename 旧话题名 新话题名</code>'); return; }
+      if (!map[oldName]) { await sendReply(`⚠️ 找不到「${oldName}」`); return; }
       tid = map[oldName];
     }
     await editForumTopic(token, chatId, tid, newName);
     delete map[oldName]; map[newName] = tid;
     await saveTopicMap(env.KV, chatId, map);
     await addPref(env.KV, chatId, oldName, newName);
-    await sendMessage(token, chatId, `✅ 「${oldName}」→「${newName}」\n🧠 AI 已记录偏好`, threadId);
+    await sendReply(`✅ 「${oldName}」→「${newName}」\n🧠 AI 已记录偏好`);
     return;
   }
 
   if (cmd === '/merge') {
     const topicA = parts[1], topicB = parts.slice(2).join(' ');
-    if (!topicA || !topicB) { await sendMessage(token, chatId, '用法：<code>/merge 话题A 话题B</code>', threadId); return; }
+    if (!topicA || !topicB) { await sendReply('用法：<code>/merge 话题A 话题B</code>'); return; }
     const map = await getTopicMap(env.KV, chatId);
-    if (!map[topicA]) { await sendMessage(token, chatId, `⚠️ 找不到「${topicA}」`, threadId); return; }
-    if (!map[topicB]) { await sendMessage(token, chatId, `⚠️ 找不到「${topicB}」`, threadId); return; }
+    if (!map[topicA]) { await sendReply(`⚠️ 找不到「${topicA}」`); return; }
+    if (!map[topicB]) { await sendReply(`⚠️ 找不到「${topicB}」`); return; }
     await closeForumTopic(token, chatId, map[topicA]);
     delete map[topicA];
     await saveTopicMap(env.KV, chatId, map);
     await addPref(env.KV, chatId, topicA, topicB);
-    await sendMessage(token, chatId, `✅ 「${topicA}」已合并到「${topicB}」并关闭。`, threadId);
+    await sendReply(`✅ 「${topicA}」已合并到「${topicB}」并关闭。`);
     return;
   }
 
   if (cmd === '/search') {
     const kw = parts.slice(1).join(' ');
-    if (!kw) { await sendMessage(token, chatId, '用法：<code>/search 关键词</code>', threadId); return; }
+    if (!kw) { await sendReply('用法：<code>/search 关键词</code>'); return; }
     const map   = await getTopicMap(env.KV, chatId);
     const prefs = await getPrefs(env.KV, chatId);
     const matchTopics = Object.keys(map).filter(n => n.includes(kw));
     const matchPrefs  = prefs.filter(p => p.from.includes(kw) || p.to.includes(kw));
     if (!matchTopics.length && !matchPrefs.length) {
-      await sendMessage(token, chatId, `🔍 未找到含「${kw}」的结果`, threadId); return;
+      await sendReply(`🔍 未找到含「${kw}」的结果`); return;
     }
     let reply = `🔍 <b>搜索「${kw}」</b>\n\n`;
     if (matchTopics.length) reply += `<b>话题：</b>\n${matchTopics.map(n => `  📁 ${n}`).join('\n')}\n\n`;
     if (matchPrefs.length)  reply += `<b>偏好：</b>\n${matchPrefs.map(p => `  ${p.from} → ${p.to}`).join('\n')}`;
-    await sendMessage(token, chatId, reply.trim(), threadId);
+    await sendReply(reply.trim());
     return;
   }
 
@@ -1144,7 +1179,7 @@ async function handleCommand(msg, env) {
     const total   = entries.reduce((s, [, c]) => s + c, 0);
     let reply = `📊 <b>统计</b>\n\n话题总数：${Object.keys(map).length} 个\n今日新增：${total} 条`;
     if (entries.length) reply += `\n\n<b>今日分布：</b>\n${entries.map(([n, c]) => `  📁 ${n}  ${c} 条`).join('\n')}`;
-    await sendMessage(token, chatId, reply, threadId);
+    await sendReply(reply);
     return;
   }
 
@@ -1154,8 +1189,7 @@ async function handleCommand(msg, env) {
     const freeMB    = KV_FREE_LIMIT_MB - usedMB;
     const pct       = (usedMB / KV_FREE_LIMIT_MB * 100).toFixed(1);
     const bar       = '█'.repeat(Math.floor(Number(pct) / 10)) + '░'.repeat(10 - Math.floor(Number(pct) / 10));
-    await sendMessage(token, chatId,
-      `💾 <b>存储用量</b>\n\n` +
+    await sendReply(`💾 <b>存储用量</b>\n\n` +
       `${bar} ${pct}%\n` +
       `已用：${usedMB.toFixed(2)} MB\n` +
       `剩余：${freeMB.toFixed(2)} MB / ${KV_FREE_LIMIT_MB} MB\n\n` +
@@ -1170,8 +1204,7 @@ async function handleCommand(msg, env) {
     const cleaned = await cleanOldNotes(env.KV, chatId, days);
     const usedBytes = await getStorageBytes(env.KV, chatId);
     const usedMB    = (usedBytes / 1024 / 1024).toFixed(2);
-    await sendMessage(token, chatId,
-      `🗑️ 已清理 ${cleaned} 条 ${days} 天前的笔记\n当前已用：${usedMB} MB`,
+    await sendReply(`🗑️ 已清理 ${cleaned} 条 ${days} 天前的笔记\n当前已用：${usedMB} MB`,
       threadId
     );
     return;
@@ -1184,7 +1217,7 @@ async function handleCommand(msg, env) {
       : await getAllNotes(env.KV, chatId);
 
     if (!notes.length) {
-      await sendMessage(token, chatId,
+      await sendReply(
         topicFilter ? `📂 话题「${topicFilter}」没有笔记` : '📂 还没有任何笔记',
         threadId
       );
@@ -1231,9 +1264,8 @@ async function handleCommand(msg, env) {
 
   if (cmd === '/prefs') {
     const prefs = await getPrefs(env.KV, chatId);
-    if (!prefs.length) { await sendMessage(token, chatId, '🧠 还没有偏好记录。', threadId); return; }
-    await sendMessage(token, chatId,
-      `🧠 <b>AI 偏好</b>（${prefs.length} 条）\n\n${prefs.map(p => `  <b>${p.from}</b> → <b>${p.to}</b>`).join('\n')}`,
+    if (!prefs.length) { await sendReply('🧠 还没有偏好记录。'); return; }
+    await sendReply(`🧠 <b>AI 偏好</b>（${prefs.length} 条）\n\n${prefs.map(p => `  <b>${p.from}</b> → <b>${p.to}</b>`).join('\n')}`,
       threadId
     );
     return;
@@ -1244,25 +1276,25 @@ async function handleCommand(msg, env) {
       env.KV.delete(`prefs:${chatId}`),
       env.KV.delete(`memories:${chatId}`)
     ]);
-    await sendMessage(token, chatId, '🗑️ 分类偏好与用户记忆规则已清空。', threadId);
+    await sendReply('🗑️ 分类偏好与用户记忆规则已清空。');
     return;
   }
 
   if (cmd === '/subscribe_daily') {
     await addSubscriber(env.KV, chatId, threadId);
-    await sendMessage(token, chatId, '✅ 已开启每日摘要，每天晚上 8 点推送。', threadId);
+    await sendReply('✅ 已开启每日摘要，每天晚上 8 点推送。');
     return;
   }
 
   if (cmd === '/unsubscribe_daily') {
     await removeSubscriber(env.KV, chatId);
-    await sendMessage(token, chatId, '✅ 已关闭每日摘要。', threadId);
+    await sendReply('✅ 已关闭每日摘要。');
     return;
   }
 
   if (cmd === '/reset_topics') {
     await env.KV.delete(`topics:${chatId}`);
-    await sendMessage(token, chatId, '✅ 话题映射已清空。', threadId);
+    await sendReply('✅ 话题映射已清空。');
     return;
   }
 }
