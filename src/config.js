@@ -15,6 +15,9 @@ export const CONFIDENCE_THRESHOLD = 0.70;
 // 超过此用量时在默认话题发一条提醒（CF KV 免费版上限 1024MB）
 export const STORAGE_WARN_MB = 900;
 
+// CF KV 免费版总容量上限（MB），用于 /storage 显示剩余空间
+export const KV_FREE_LIMIT_MB = 1024;
+
 // /clean 默认清理天数（不带参数时使用）
 export const CLEAN_DEFAULT_DAYS = 30;
 
