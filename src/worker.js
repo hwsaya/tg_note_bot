@@ -87,8 +87,6 @@ const editForumTopic = (token, chatId, threadId, name) =>
 const closeForumTopic = (token, chatId, threadId) =>
   tgCall(token, 'closeForumTopic', { chat_id: chatId, message_thread_id: threadId });
 
-const deleteForumTopic = (token, chatId, threadId) =>
-  tgCall(token, 'deleteForumTopic', { chat_id: chatId, message_thread_id: threadId });
 
 // ─── KV：话题映射 ──────────────────────────────────────────────────────────────
 
@@ -97,29 +95,6 @@ const getTopicMap = async (kv, chatId) => {
 };
 const saveTopicMap = (kv, chatId, map) => kv.put(`topics:${chatId}`, JSON.stringify(map));
 
-// 修复后的尝试删除空话题逻辑（安全过滤版）
-async function tryDeleteEmptyTopic(token, kv, chatId, topicName, threadId) {
-  // 1. 先查索引，绝对不能盲删
-  const idxRaw = await kv.get(`noteindex:${chatId}`);
-  if (!idxRaw) return;
-  const idx = JSON.parse(idxRaw);
-  
-  // 2. 统计属于这个老话题的笔记数量
-  const notesInTopic = idx.filter(n => n.topic === topicName);
-  
-  // 3. 核心免死金牌：如果里面有超过 1 条笔记，说明是有历史记录的老话题，直接退出！
-  if (notesInTopic.length > 1) {
-    return; 
-  }
-
-  // 4. 只有确实是刚创建（仅有 1 条笔记）的情况，才调用 API 彻底销毁
-  const res = await deleteForumTopic(token, chatId, threadId);
-  if (res?.ok) {
-    const map = await getTopicMap(kv, chatId);
-    delete map[topicName];
-    await saveTopicMap(kv, chatId, map);
-  }
-}
 
 async function getOrCreateTopic(kv, token, chatId, category) {
   const map = await getTopicMap(kv, chatId);
@@ -700,11 +675,8 @@ async function handleCallbackQuery(query, env) {
     const map = await getTopicMap(env.KV, chatId);
     const newTopicName = Object.keys(map).find(k => map[k] === newThreadId) || '未知';
     const copyRes = await copyMessage(token, chatId, chatId, corr.movedMsgId, newThreadId);
-    if (copyRes?.ok) {
-      await deleteMessage(token, chatId, corr.movedMsgId);
-      // 原话题消息移走后，调用安全检查版执行删除
-      await tryDeleteEmptyTopic(token, env.KV, chatId, corr.topicName, corr.movedThreadId);
-    }
+    const copyRes = await copyMessage(token, chatId, chatId, corr.movedMsgId, newThreadId);
+    if (copyRes?.ok) await deleteMessage(token, chatId, corr.movedMsgId);
     await addPref(env.KV, chatId, corr.topicName, newTopicName);
     await incrementStats(env.KV, chatId, newTopicName);
     
@@ -743,10 +715,7 @@ async function handlePendingInput(msg, pending, env) {
     const newThreadId = await getOrCreateTopic(env.KV, token, chatId, newName);
     if (!newThreadId) { await sendMessage(token, chatId, `⚠️ 无法创建话题「${newName}」`); return; }
     const cr1 = await copyMessage(token, chatId, chatId, pending.movedMsgId, newThreadId);
-    if (cr1?.ok) {
-      await deleteMessage(token, chatId, pending.movedMsgId);
-      await tryDeleteEmptyTopic(token, env.KV, chatId, pending.topicName, pending.movedThreadId);
-    }
+    if (cr1?.ok) await deleteMessage(token, chatId, pending.movedMsgId);
     await addPref(env.KV, chatId, pending.topicName, newName);
     await incrementStats(env.KV, chatId, newName);
     
@@ -793,10 +762,7 @@ async function handlePendingInput(msg, pending, env) {
       return;
     }
     const cr2 = await copyMessage(token, chatId, chatId, pending.movedMsgId, newThreadId);
-    if (cr2?.ok) {
-      await deleteMessage(token, chatId, pending.movedMsgId);
-      await tryDeleteEmptyTopic(token, env.KV, chatId, pending.topicName, pending.movedThreadId);
-    }
+    if (cr2?.ok) await deleteMessage(token, chatId, pending.movedMsgId);
     await addPref(env.KV, chatId, pending.topicName, newCategory);
     await incrementStats(env.KV, chatId, newCategory);
     
