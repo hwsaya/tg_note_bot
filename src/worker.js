@@ -675,7 +675,6 @@ async function handleCallbackQuery(query, env) {
     const map = await getTopicMap(env.KV, chatId);
     const newTopicName = Object.keys(map).find(k => map[k] === newThreadId) || '未知';
     const copyRes = await copyMessage(token, chatId, chatId, corr.movedMsgId, newThreadId);
-    const copyRes = await copyMessage(token, chatId, chatId, corr.movedMsgId, newThreadId);
     if (copyRes?.ok) await deleteMessage(token, chatId, corr.movedMsgId);
     await addPref(env.KV, chatId, corr.topicName, newTopicName);
     await incrementStats(env.KV, chatId, newTopicName);
