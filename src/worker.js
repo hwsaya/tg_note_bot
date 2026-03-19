@@ -2,22 +2,16 @@
  * Telegram 笔记分类 Bot v5
  *
  * 功能：
- *   - 文字/图片/语音/转发 → AI 自动分类，内容存 KV，/export 导出原文
- *   - 排版保留原始格式（copyMessage）
- *   - AI 置信度 < 0.70 自动弹纠错菜单
- *   - 占位"分析中…"消息，完成后删除
- *   - 分类通知 5 秒后自动删除（低置信度时保留）
- *   - 纠错：AI重分类(带提示词) / 自定义话题名 / 展开已有话题
- *   - 引用回复"删除" 并行静默删除两条消息
- *   - KV 已用 MB 统计 + /storage 查看 + /clean 清理旧笔记
- *   - 填 SPEECH_API_KEY 自动支持语音转文字
- *
- * Secrets:
- *   TELEGRAM_BOT_TOKEN / AI_API_KEY / VISION_API_KEY / SPEECH_API_KEY
- * Vars:
- *   AI_BASE_URL / AI_MODEL
- *   VISION_BASE_URL / VISION_MODEL_PHOTO / VISION_MODEL_DOC
- *   SPEECH_BASE_URL / SPEECH_MODEL
+ * - 文字/图片/语音/转发 → AI 自动分类，内容存 KV，/export 导出原文
+ * - 排版保留原始格式（copyMessage）
+ * - AI 置信度 < 0.70 自动弹纠错菜单
+ * - 占位"分析中…"消息，完成后删除
+ * - 分类通知 5 秒后自动删除（低置信度时保留）
+ * - 纠错：AI重分类(带提示词) / 自定义话题名 / 展开已有话题
+ * - 纠错完成：若是新建话题则自动删除空话题，并同步更新 KV 索引
+ * - 引用回复"删除" 并行静默删除两条消息
+ * - KV 已用 MB 统计 + /storage 查看 + /clean 清理旧笔记
+ * - 填 SPEECH_API_KEY 自动支持语音转文字
  */
 
 import {
@@ -41,10 +35,10 @@ import {
   PROMPT_IMAGE_DESCRIBE,
   PROMPT_CHAT_SYSTEM,
   PROMPT_CHAT_SUMMARY,
+  KV_FREE_LIMIT_MB,
 } from './config.js';
 
 const TG_API = (token, method) => `https://api.telegram.org/bot${token}/${method}`;
-const KV_FREE_LIMIT_MB = 1024;
 
 // ─── Telegram API ─────────────────────────────────────────────────────────────
 
@@ -93,12 +87,39 @@ const editForumTopic = (token, chatId, threadId, name) =>
 const closeForumTopic = (token, chatId, threadId) =>
   tgCall(token, 'closeForumTopic', { chat_id: chatId, message_thread_id: threadId });
 
+const deleteForumTopic = (token, chatId, threadId) =>
+  tgCall(token, 'deleteForumTopic', { chat_id: chatId, message_thread_id: threadId });
+
 // ─── KV：话题映射 ──────────────────────────────────────────────────────────────
 
 const getTopicMap = async (kv, chatId) => {
   const r = await kv.get(`topics:${chatId}`); return r ? JSON.parse(r) : {};
 };
 const saveTopicMap = (kv, chatId, map) => kv.put(`topics:${chatId}`, JSON.stringify(map));
+
+// 修复后的尝试删除空话题逻辑（安全过滤版）
+async function tryDeleteEmptyTopic(token, kv, chatId, topicName, threadId) {
+  // 1. 先查索引，绝对不能盲删
+  const idxRaw = await kv.get(`noteindex:${chatId}`);
+  if (!idxRaw) return;
+  const idx = JSON.parse(idxRaw);
+  
+  // 2. 统计属于这个老话题的笔记数量
+  const notesInTopic = idx.filter(n => n.topic === topicName);
+  
+  // 3. 核心免死金牌：如果里面有超过 1 条笔记，说明是有历史记录的老话题，直接退出！
+  if (notesInTopic.length > 1) {
+    return; 
+  }
+
+  // 4. 只有确实是刚创建（仅有 1 条笔记）的情况，才调用 API 彻底销毁
+  const res = await deleteForumTopic(token, chatId, threadId);
+  if (res?.ok) {
+    const map = await getTopicMap(kv, chatId);
+    delete map[topicName];
+    await saveTopicMap(kv, chatId, map);
+  }
+}
 
 async function getOrCreateTopic(kv, token, chatId, category) {
   const map = await getTopicMap(kv, chatId);
@@ -132,7 +153,6 @@ const getMemories = async (kv, chatId) => {
 async function addMemory(kv, chatId, text) {
   const mems = await getMemories(kv, chatId);
   if (!mems.includes(text)) mems.push(text);
-  // 使用 config 中的限制数量
   if (mems.length > MAX_MEMORY_COUNT) mems.shift(); 
   await kv.put(`memories:${chatId}`, JSON.stringify(mems));
 }
@@ -157,31 +177,49 @@ const getDailyStats = async (kv, chatId) => {
   const r = await kv.get(todayKey(chatId)); return r ? JSON.parse(r) : {};
 };
 
-// ─── KV：笔记内容存储 ─────────────────────────────────────────────────────────
-// key: note:{chatId}:{timestamp}
-// index: noteindex:{chatId} → [{ id, topic, ts, preview }]
+// ─── KV：笔记内容存储与更新 ───────────────────────────────────────────────────
 
 async function saveNote(kv, chatId, topic, content, contentType) {
   const ts  = Date.now();
-  const id  = `${chatId}:${ts}`;
+  const id  = `${chatId}:${ts}:${Math.random().toString(36).slice(2, 6)}`;
   const key = `note:${id}`;
   const note = { id, topic, content, contentType, ts };
   const noteStr = JSON.stringify(note);
 
-  // 存笔记
   await kv.put(key, noteStr);
 
-  // 更新索引
   const idxKey = `noteindex:${chatId}`;
   const idxRaw = await kv.get(idxKey);
   const idx    = idxRaw ? JSON.parse(idxRaw) : [];
   idx.push({ id, topic, ts, preview: content.slice(0, 30) });
   await kv.put(idxKey, JSON.stringify(idx));
 
-  // 更新已用存储量（字节）
   await addStorageBytes(kv, chatId, new TextEncoder().encode(noteStr).length);
-
   return id;
+}
+
+// 同步更新笔记的类目（修复导出错乱的 Bug）
+async function updateNoteTopicInKV(kv, chatId, noteId, newTopic) {
+  if (!noteId) return;
+  
+  // 1. 更新正文
+  const noteRaw = await kv.get(`note:${noteId}`);
+  if (noteRaw) {
+    const note = JSON.parse(noteRaw);
+    note.topic = newTopic;
+    await kv.put(`note:${noteId}`, JSON.stringify(note));
+  }
+  
+  // 2. 同步更新索引目录
+  const idxRaw = await kv.get(`noteindex:${chatId}`);
+  if (idxRaw) {
+    const idx = JSON.parse(idxRaw);
+    const match = idx.find(n => n.id === noteId);
+    if (match) {
+      match.topic = newTopic;
+      await kv.put(`noteindex:${chatId}`, JSON.stringify(idx));
+    }
+  }
 }
 
 async function getNotesByTopic(kv, chatId, topic) {
@@ -252,8 +290,6 @@ async function getStorageBytes(kv, chatId) {
   return r ? Number(r) : 0;
 }
 
-const toMB = (bytes) => (bytes / 1024 / 1024).toFixed(2);
-
 // ─── KV：每日摘要订阅 ─────────────────────────────────────────────────────────
 
 const getSubscribers = async (kv) => {
@@ -311,7 +347,6 @@ const deleteCorrection = (kv, chatId, notifMsgId) =>
   kv.delete(`corr:${chatId}:${notifMsgId}`);
 
 // ─── KV：对话会话（临时，结束后删除）────────────────────────────────────────────
-// key: chat:{chatId}:{threadId}  → { noteContext, history: [{role, content}], startMsgIds: [] }
 
 const getChatSession = async (kv, chatId, threadId) => {
   const r = await kv.get(`chat:${chatId}:${threadId}`);
@@ -365,13 +400,10 @@ const parseJSON = (raw) => {
 
 async function speechToText(token, fileId, env) {
   if (!env.SPEECH_API_KEY) return null;
-
   const buf = await downloadFile(token, fileId);
   if (!buf) return null;
-
   const baseUrl = (env.SPEECH_BASE_URL || DEFAULT_SPEECH_BASE_URL).replace(/\/$/, '');
   const model   = env.SPEECH_MODEL || DEFAULT_SPEECH_MODEL;
-
   const form = new FormData();
   form.append('file', new Blob([buf], { type: 'audio/ogg' }), 'voice.ogg');
   form.append('model', model);
@@ -471,11 +503,9 @@ async function handleDefaultTopicMessage(msg, env, ctx) {
   const hasContent = text.trim() || photo || document || voice || audio;
   if (!hasContent) return;
 
-  // ── 占位消息 ──────────────────────────────────────────────────────────────
   const placeholderRes = await sendMessage(token, chatId, '⏳ 分析中…');
   const placeholderId  = placeholderRes?.result?.message_id;
 
-  // ── 分类 ──────────────────────────────────────────────────────────────────
   let result;
   let contentToSave = '';
   let contentType   = 'text';
@@ -501,7 +531,6 @@ async function handleDefaultTopicMessage(msg, env, ctx) {
         result = await classifyImage(fileId, false, token, env, chatId);
         contentToSave = result.imageDesc ? `（图片）${result.imageDesc}` : '（图片）';
       } else {
-        // 无视觉 Key：直接归入「图片」话题，不调 AI
         contentToSave = text ? `（图片）${text}` : '（图片）';
         result = { category: '图片', summary: '图片', confidence: 1 };
       }
@@ -528,30 +557,24 @@ async function handleDefaultTopicMessage(msg, env, ctx) {
 
   const { category, summary, confidence = 1 } = result;
 
-  // ── 删占位 ────────────────────────────────────────────────────────────────
   if (placeholderId) await deleteMessage(token, chatId, placeholderId);
 
-  // ── 获取/创建话题 ─────────────────────────────────────────────────────────
   const threadId = await getOrCreateTopic(env.KV, token, chatId, category);
   if (!threadId) {
     await sendMessage(token, chatId, `⚠️ 无法创建话题「${category}」，检查 Bot 管理话题权限`);
     return;
   }
 
-  // ── 复制消息到话题（保留原始排版）────────────────────────────────────────
   const r = await copyMessage(token, chatId, chatId, message_id, threadId);
   const movedMsgId = r?.result?.message_id;
 
-  // ── 删除默认话题原消息 ────────────────────────────────────────────────────
   await deleteMessage(token, chatId, message_id);
 
-  // ── 存笔记内容到 KV + 更新统计 ────────────────────────────────────────────
   const [noteId] = await Promise.all([
     saveNote(env.KV, chatId, category, contentToSave, contentType),
     incrementStats(env.KV, chatId, category),
   ]);
 
-  // ── 存储量预警（超过 900MB 时提醒）───────────────────────────────────────
   const usedBytes = await getStorageBytes(env.KV, chatId);
   const usedMB    = usedBytes / 1024 / 1024;
   if (usedMB > STORAGE_WARN_MB) {
@@ -561,7 +584,6 @@ async function handleDefaultTopicMessage(msg, env, ctx) {
     );
   }
 
-  // ── 通知 ──────────────────────────────────────────────────────────────────
   const preview     = summary || text.slice(0, 20) || '媒体内容';
   const lowConf     = confidence < CONFIDENCE_THRESHOLD;
   const forwardTag  = isForwarded ? ' <i>（转发）</i>' : '';
@@ -579,7 +601,6 @@ async function handleDefaultTopicMessage(msg, env, ctx) {
     await recordDefaultMsgs(env.KV, chatId, notifMsgId);
   }
 
-  // 定时删通知：ctx.waitUntil 确保 Worker 不提前终止
   if (notifMsgId && ctx) {
     ctx.waitUntil((async () => {
       await new Promise(res => setTimeout(res, lowConf ? NOTIFY_LOW_CONF_DELETE_MS : NOTIFY_AUTO_DELETE_MS));
@@ -679,18 +700,17 @@ async function handleCallbackQuery(query, env) {
     const map = await getTopicMap(env.KV, chatId);
     const newTopicName = Object.keys(map).find(k => map[k] === newThreadId) || '未知';
     const copyRes = await copyMessage(token, chatId, chatId, corr.movedMsgId, newThreadId);
-    if (copyRes?.ok) await deleteMessage(token, chatId, corr.movedMsgId);
+    if (copyRes?.ok) {
+      await deleteMessage(token, chatId, corr.movedMsgId);
+      // 原话题消息移走后，调用安全检查版执行删除
+      await tryDeleteEmptyTopic(token, env.KV, chatId, corr.topicName, corr.movedThreadId);
+    }
     await addPref(env.KV, chatId, corr.topicName, newTopicName);
     await incrementStats(env.KV, chatId, newTopicName);
-    // 更新笔记话题
-    if (corr.noteId) {
-      const noteRaw = await env.KV.get(`note:${corr.noteId}`);
-      if (noteRaw) {
-        const note = JSON.parse(noteRaw);
-        note.topic = newTopicName;
-        await env.KV.put(`note:${corr.noteId}`, JSON.stringify(note));
-      }
-    }
+    
+    // 连同正文和索引一起更新
+    await updateNoteTopicInKV(env.KV, chatId, corr.noteId, newTopicName);
+    
     await deleteCorrection(env.KV, chatId, notifMsgId);
     await editMessageText(token, chatId, notifMsgId,
       `✅ <b>${newTopicName}</b>  <i>${corr.preview}</i>\n<i>已纠正，AI 记录偏好</i>`
@@ -723,17 +743,15 @@ async function handlePendingInput(msg, pending, env) {
     const newThreadId = await getOrCreateTopic(env.KV, token, chatId, newName);
     if (!newThreadId) { await sendMessage(token, chatId, `⚠️ 无法创建话题「${newName}」`); return; }
     const cr1 = await copyMessage(token, chatId, chatId, pending.movedMsgId, newThreadId);
-    if (cr1?.ok) await deleteMessage(token, chatId, pending.movedMsgId);
+    if (cr1?.ok) {
+      await deleteMessage(token, chatId, pending.movedMsgId);
+      await tryDeleteEmptyTopic(token, env.KV, chatId, pending.topicName, pending.movedThreadId);
+    }
     await addPref(env.KV, chatId, pending.topicName, newName);
     await incrementStats(env.KV, chatId, newName);
-    if (pending.noteId) {
-      const noteRaw = await env.KV.get(`note:${pending.noteId}`);
-      if (noteRaw) {
-        const note = JSON.parse(noteRaw);
-        note.topic = newName;
-        await env.KV.put(`note:${pending.noteId}`, JSON.stringify(note));
-      }
-    }
+    
+    await updateNoteTopicInKV(env.KV, chatId, pending.noteId, newName);
+    
     await deleteCorrection(env.KV, chatId, pending.notifMsgId);
     await editMessageText(token, chatId, pending.notifMsgId,
       `✅ <b>${newName}</b>  <i>${pending.preview}</i>\n<i>自定义话题，AI 已记录偏好</i>`
@@ -775,17 +793,15 @@ async function handlePendingInput(msg, pending, env) {
       return;
     }
     const cr2 = await copyMessage(token, chatId, chatId, pending.movedMsgId, newThreadId);
-    if (cr2?.ok) await deleteMessage(token, chatId, pending.movedMsgId);
+    if (cr2?.ok) {
+      await deleteMessage(token, chatId, pending.movedMsgId);
+      await tryDeleteEmptyTopic(token, env.KV, chatId, pending.topicName, pending.movedThreadId);
+    }
     await addPref(env.KV, chatId, pending.topicName, newCategory);
     await incrementStats(env.KV, chatId, newCategory);
-    if (pending.noteId) {
-      const noteRaw = await env.KV.get(`note:${pending.noteId}`);
-      if (noteRaw) {
-        const note = JSON.parse(noteRaw);
-        note.topic = newCategory;
-        await env.KV.put(`note:${pending.noteId}`, JSON.stringify(note));
-      }
-    }
+    
+    await updateNoteTopicInKV(env.KV, chatId, pending.noteId, newCategory);
+    
     await deleteCorrection(env.KV, chatId, pending.notifMsgId);
     await editMessageText(token, chatId, pending.notifMsgId,
       `✅ <b>${newCategory}</b>  <i>${pending.preview}</i>\n<i>AI 重新分类，已记录偏好</i>`
@@ -872,20 +888,13 @@ export default {
           const threadId = String(msg.message_thread_id);
           const text     = msg.text.trim();
 
+          const session = await getChatSession(env.KV, chatId, threadId);
           if (text === '结束对话') {
-            const session = await getChatSession(env.KV, chatId, threadId);
-            if (session) {
-              await endChat(msg, session, env);
-            }
-          } else {
-            const session = await getChatSession(env.KV, chatId, threadId);
-            if (session) {
-              // 已有会话 → 继续对话
-              await continueChat(msg, session, env);
-            } else if (msg.reply_to_message) {
-              // 引用回复 → 开始新对话
-              await startChat(msg, env);
-            }
+            if (session) await endChat(msg, session, env);
+          } else if (session) {
+            await continueChat(msg, session, env);
+          } else if (msg.reply_to_message) {
+            await startChat(msg, env);
           }
         }
       }
@@ -955,24 +964,17 @@ async function startChat(msg, env) {
     800
   );
 
+  // 用 AI 回复替换占位消息，然后一次性存 session（含 replyMsgId）
+  if (thinkId) await editMessageText(token, chatId, thinkId, aiReply);
+  const msgIds = [message_id];
+  if (thinkId) msgIds.push(thinkId);
   history.push({ role: 'assistant', content: aiReply });
-
-  // 保存会话
   await saveChatSession(env.KV, chatId, threadId, {
     noteContext: quotedText,
     contextText,
     history,
-    msgIds: [message_id],
+    msgIds,
   });
-
-  // 用 AI 回复替换占位消息
-  if (thinkId) await editMessageText(token, chatId, thinkId, aiReply);
-  const replyMsgId = thinkId;
-  if (replyMsgId) {
-    const session = await getChatSession(env.KV, chatId, threadId);
-    session.msgIds.push(replyMsgId);
-    await saveChatSession(env.KV, chatId, threadId, session);
-  }
 }
 
 async function continueChat(msg, session, env) {
@@ -1000,14 +1002,12 @@ async function continueChat(msg, session, env) {
 
   session.history.push({ role: 'assistant', content: aiReply });
 
-  await saveChatSession(env.KV, chatId, threadId, session);
-
-  // 用 AI 回复替换占位
-  if (thinkId2) await editMessageText(token, chatId, thinkId2, aiReply);
+  // 用 AI 回复替换占位，然后一次性存 session
   if (thinkId2) {
+    await editMessageText(token, chatId, thinkId2, aiReply);
     session.msgIds.push(thinkId2);
-    await saveChatSession(env.KV, chatId, threadId, session);
   }
+  await saveChatSession(env.KV, chatId, threadId, session);
 }
 
 async function endChat(msg, session, env) {
