@@ -17,7 +17,7 @@ id = "25f140b1fdfc4473a6d32bcebc16a892"
 
 # 文字分类（DeepSeek，便宜快速）
 AI_BASE_URL = "https://api.deepseek.com/v1"
-AI_MODEL    = "deepseek-chat"
+AI_MODEL    = "deepseek-v4-flash"
 
 # 图片识别（硅基流动，免费）
 VISION_BASE_URL    = "https://ark.cn-beijing.volces.com/api/v3"
